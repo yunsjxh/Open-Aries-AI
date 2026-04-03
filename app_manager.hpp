@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <shellapi.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -8,6 +9,8 @@
 #include <regex>
 #include <locale>
 #include <codecvt>
+#include <algorithm>
+#include <cstdio>
 
 namespace aries {
 
@@ -85,7 +88,14 @@ public:
     // 启动应用
     static bool launchApp(const InstalledApp& app) {
         if (!app.executablePath.empty()) {
-            return launchExecutable(app.executablePath);
+            // 检查是否是 UWP 应用（路径包含 WindowsApps）
+            if (app.executablePath.find("WindowsApps") != std::string::npos ||
+                app.executablePath.find("Microsoft.WindowsStore") != std::string::npos) {
+                return launchUWPApp(app.name);
+            }
+            if (launchExecutable(app.executablePath)) {
+                return true;
+            }
         }
         
         // 尝试从安装位置查找可执行文件
@@ -96,7 +106,54 @@ public:
             }
         }
         
+        // 最后尝试通过名称启动（可能是命令行工具或 UWP 应用）
+        return launchByName(app.name) || launchUWPApp(app.name);
+    }
+    
+    static bool launchByName(const std::string& name) {
+        // 尝试直接启动
+        if (launchExecutable(name)) {
+            return true;
+        }
+        
+        // 尝试用 where 命令查找
+        std::string cmd = "where " + name + " 2>nul";
+        char buffer[512];
+        FILE* pipe = _popen(cmd.c_str(), "r");
+        if (pipe) {
+            if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                std::string path(buffer);
+                // 去除换行符
+                path.erase(std::remove(path.begin(), path.end(), '\n'), path.end());
+                path.erase(std::remove(path.begin(), path.end(), '\r'), path.end());
+                _pclose(pipe);
+                if (!path.empty()) {
+                    return launchExecutable(path);
+                }
+            }
+            _pclose(pipe);
+        }
+        
         return false;
+    }
+    
+    static bool launchUWPApp(const std::string& appName) {
+        // 方式1: 使用 start 命令启动 UWP 应用
+        std::string startCmd = "cmd /c start \"\" \"shell:AppsFolder\\" + appName + "\"";
+        if (launchExecutable(startCmd)) {
+            return true;
+        }
+        
+        // 方式2: 使用 explorer 启动
+        std::string explorerCmd = "explorer.exe shell:AppsFolder\\" + appName;
+        if (launchExecutable(explorerCmd)) {
+            return true;
+        }
+        
+        // 方式3: 直接使用 ShellExecute
+        std::string shellCmd = "shell:AppsFolder\\" + appName;
+        HINSTANCE result = ShellExecuteA(NULL, "open", shellCmd.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        return (reinterpret_cast<INT_PTR>(result) > 32);
     }
     
     // 通过名称启动应用
@@ -247,12 +304,13 @@ private:
     }
     
     static bool launchExecutable(const std::string& exePath) {
+        // 先尝试用 CreateProcess 启动
         STARTUPINFOA si = { sizeof(si) };
         PROCESS_INFORMATION pi;
         
         BOOL success = CreateProcessA(
+            exePath.c_str(),
             NULL,
-            const_cast<char*>(exePath.c_str()),
             NULL,
             NULL,
             FALSE,
@@ -269,7 +327,9 @@ private:
             return true;
         }
         
-        return false;
+        // 如果失败，尝试用 ShellExecute 启动（支持 UWP 应用）
+        HINSTANCE result = ShellExecuteA(NULL, "open", exePath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        return (reinterpret_cast<INT_PTR>(result) > 32);
     }
 };
 

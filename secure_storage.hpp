@@ -88,34 +88,9 @@ public:
         return DeleteFileA(getStoragePath(provider).c_str()) != 0;
     }
     
-    // 获取所有已保存的提供商列表
-    static std::vector<std::string> getSavedProviders() {
-        std::vector<std::string> providers;
-        std::vector<std::string> knownProviders = {
-            "siliconflow", "deepseek", "aliyun", "zhipu", "openai", 
-            "azure", "baidu", "minimax", "moonshot", "lingyi",
-            "groq", "together", "anthropic", "google", "custom"
-        };
-        
-        for (const auto& provider : knownProviders) {
-            if (hasSavedApiKey(provider)) {
-                providers.push_back(provider);
-            }
-        }
-        
-        return providers;
-    }
-    
     // 删除所有保存的 API Key
     static bool deleteAllApiKeys() {
-        auto providers = getSavedProviders();
-        bool allDeleted = true;
-        for (const auto& provider : providers) {
-            if (!deleteApiKey(provider)) {
-                allDeleted = false;
-            }
-        }
-        return allDeleted;
+        return deleteApiKey("siliconflow");
     }
 
 private:
