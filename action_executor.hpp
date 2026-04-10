@@ -9,6 +9,7 @@
 #include <vector>
 #include <map>
 #include <cctype>
+#include <algorithm>
 
 namespace aries {
 
@@ -17,6 +18,10 @@ struct ExecutionResult {
     std::string message;
     
     ExecutionResult(bool s = false, const std::string& m = "") 
+        : success(s), message(m) {}
+    
+    // 兼容三个参数的构造函数（第三个参数被忽略）
+    ExecutionResult(bool s, const std::string& m, const std::string&) 
         : success(s), message(m) {}
 };
 
@@ -54,6 +59,8 @@ public:
 
         if (iequals(action.action, "Tap") || iequals(action.action, "Click")) {
             return executeTap(action);
+        } else if (iequals(action.action, "RightClick")) {
+            return executeRightClick(action);
         } else if (iequals(action.action, "Type")) {
             return executeType(action);
         } else if (iequals(action.action, "Swipe")) {
@@ -86,6 +93,98 @@ private:
             logCallback_(message);
         }
         std::cout << message << std::endl;
+    }
+
+    // 命令安全检查：验证命令是否包含危险操作
+    bool isCommandAllowed(const std::string& command) {
+        // 转换为小写进行检查
+        std::string lowerCmd = command;
+        std::transform(lowerCmd.begin(), lowerCmd.end(), lowerCmd.begin(), ::tolower);
+        
+        // 危险命令黑名单模式
+        static const std::vector<std::string> blockedPatterns = {
+            // 文件删除相关
+            "remove-item", "del ", "delete", "erase", "rmdir", "rd ",
+            "rm -rf", "rm -r", "rm -f",
+            // 格式化相关
+            "format-volume", "format ", "clear-disk", "initialize-disk",
+            // 执行策略绕过
+            "set-executionpolicy", "-executionpolicy bypass",
+            "-executionpolicy unrestricted", "-executionpolicy remotesigned",
+            // 代码执行相关
+            "invoke-expression", "iex", "invoke-command", "icm",
+            // 网络下载相关
+            "downloadstring", "downloadfile", "net.webclient",
+            "system.net.webclient", "invoke-webrequest", "iwr",
+            "start-bitstransfer",
+            // 编码/混淆相关
+            "-encodedcommand", "-enc ", "frombase64string",
+            // 进程注入相关
+            "virtualalloc", "createremotethread", "writeprocessmemory",
+            // 注册表操作
+            "set-itemproperty", "remove-itemproperty", "new-itemproperty",
+            // 服务操作
+            "new-service", "set-service", "remove-service",
+            // WMI相关
+            "invoke-wmimethod", "invoke-cimmethod",
+            // 其他危险操作
+            "start-process.*powershell", "start-process.*cmd",
+            "[convert]::", "[system.convert]::"
+        };
+        
+        for (const auto& pattern : blockedPatterns) {
+            if (lowerCmd.find(pattern) != std::string::npos) {
+                log("安全警告: 检测到危险命令模式 '" + std::string(pattern) + "'");
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    // 转义命令中的特殊字符，防止注入
+    std::string escapeCommand(const std::string& command) {
+        std::string escaped;
+        escaped.reserve(command.length() * 2);
+        
+        for (char c : command) {
+            switch (c) {
+                case '"':
+                    escaped += "`\"";  // PowerShell转义
+                    break;
+                case '`':
+                    escaped += "``";
+                    break;
+                case '$':
+                    escaped += "`$";
+                    break;
+                case '&':
+                    escaped += "`&";
+                    break;
+                case '|':
+                    escaped += "`|";
+                    break;
+                case ';':
+                    escaped += "`;";
+                    break;
+                case '>':
+                    escaped += "`>";
+                    break;
+                case '<':
+                    escaped += "`<";
+                    break;
+                case '(':
+                    escaped += "`(";
+                    break;
+                case ')':
+                    escaped += "`)";
+                    break;
+                default:
+                    escaped += c;
+            }
+        }
+        
+        return escaped;
     }
 
     std::pair<int, int> parsePoint(const std::string& pointStr) {
@@ -185,6 +284,52 @@ private:
         Sleep(config_.tapAwaitWindowTimeoutMs);
 
         return ExecutionResult(true, "点击成功");
+    }
+
+    // 执行右键点击
+    ExecutionResult executeRightClick(const ParsedAgentAction& action) {
+        std::string element = readField(action.fields, {"element"});
+        if (element.empty()) {
+            return ExecutionResult(false, "未指定点击坐标");
+        }
+
+        auto point = parsePoint(element);
+        if (point.first < 0) {
+            return ExecutionResult(false, "无效的点击坐标: " + element);
+        }
+
+        auto [x, y] = parsePointToScreen(point.first, point.second);
+
+        log("执行操作: 右键点击(" + std::to_string(x) + "," + std::to_string(y) + ")");
+
+        // 移动鼠标到指定位置
+        if (!SetCursorPos(x, y)) {
+            return ExecutionResult(false, "移动鼠标失败");
+        }
+
+        // 等待
+        Sleep(config_.tapAwaitWindowTimeoutMs);
+
+        // 模拟右键点击
+        INPUT inputs[2] = {};
+        
+        // 右键按下
+        inputs[0].type = INPUT_MOUSE;
+        inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+        
+        // 右键释放
+        inputs[1].type = INPUT_MOUSE;
+        inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+        
+        UINT result = SendInput(2, inputs, sizeof(INPUT));
+        if (result != 2) {
+            return ExecutionResult(false, "模拟右键点击失败");
+        }
+
+        // 等待
+        Sleep(config_.tapAwaitWindowTimeoutMs);
+
+        return ExecutionResult(true, "右键点击成功");
     }
 
     // 执行输入
@@ -393,6 +538,43 @@ private:
 
         log("执行操作: 执行命令 \"" + command + "\"");
 
+        // 检查是否是直接执行可执行文件（路径以 .exe 结尾）
+        std::string trimmedCmd = command;
+        // 去除首尾空格
+        size_t start = trimmedCmd.find_first_not_of(" \t\r\n");
+        size_t end = trimmedCmd.find_last_not_of(" \t\r\n");
+        if (start != std::string::npos && end != std::string::npos) {
+            trimmedCmd = trimmedCmd.substr(start, end - start + 1);
+        }
+        
+        // 如果是直接执行 exe 文件，使用 ShellExecute 而不是 PowerShell
+        if (trimmedCmd.length() > 4 && 
+            (trimmedCmd.substr(trimmedCmd.length() - 4) == ".exe" ||
+             trimmedCmd.find(".exe ") != std::string::npos)) {
+            log("检测到可执行文件，使用 ShellExecute 启动");
+            
+            // 提取文件路径（处理带空格的路径）
+            std::string exePath = trimmedCmd;
+            std::string arguments = "";
+            
+            // 如果路径被引号包围，提取引号内的内容
+            if (exePath.front() == '"' && exePath.back() == '"') {
+                exePath = exePath.substr(1, exePath.length() - 2);
+            }
+            
+            // 使用 ShellExecute 执行
+            HINSTANCE result = ShellExecuteA(NULL, "open", exePath.c_str(), 
+                                              arguments.empty() ? NULL : arguments.c_str(), 
+                                              NULL, SW_SHOWNORMAL);
+            
+            if (reinterpret_cast<INT_PTR>(result) > 32) {
+                return ExecutionResult(true, "成功启动可执行文件: " + exePath);
+            } else {
+                return ExecutionResult(false, "启动可执行文件失败: " + exePath + 
+                                       " (错误码: " + std::to_string(reinterpret_cast<INT_PTR>(result)) + ")");
+            }
+        }
+
         // 执行命令并捕获输出
         std::string output = executePowerShellCommandWithOutput(command);
         
@@ -441,49 +623,73 @@ private:
         return true;
     }
 
-    // 模拟键盘输入
+    // 模拟键盘输入（支持中文）
     bool simulateKeyboardInput(const std::string& text) {
-        for (char c : text) {
-            SHORT vk = VkKeyScanA(c);
-            if (vk == -1) {
-                // 字符无法映射，尝试直接发送
-                continue;
-            }
-            
-            BYTE vkCode = LOBYTE(vk);
-            BYTE shiftState = HIBYTE(vk);
-            
-            INPUT inputs[2] = {};
-            
-            // 如果需要 Shift
-            if (shiftState & 1) {
-                INPUT shiftInput[2] = {};
-                shiftInput[0].type = INPUT_KEYBOARD;
-                shiftInput[0].ki.wVk = VK_SHIFT;
-                shiftInput[1].type = INPUT_KEYBOARD;
-                shiftInput[1].ki.wVk = VK_SHIFT;
-                shiftInput[1].ki.dwFlags = KEYEVENTF_KEYUP;
-                SendInput(1, &shiftInput[0], sizeof(INPUT));
-            }
-            
-            // 按键按下
-            inputs[0].type = INPUT_KEYBOARD;
-            inputs[0].ki.wVk = vkCode;
-            
-            // 按键释放
-            inputs[1].type = INPUT_KEYBOARD;
-            inputs[1].ki.wVk = vkCode;
-            inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-            
-            SendInput(2, inputs, sizeof(INPUT));
-            
-            // 释放 Shift
-            if (shiftState & 1) {
-                INPUT shiftInput[2] = {};
-                shiftInput[0].type = INPUT_KEYBOARD;
-                shiftInput[0].ki.wVk = VK_SHIFT;
-                shiftInput[0].ki.dwFlags = KEYEVENTF_KEYUP;
-                SendInput(1, &shiftInput[0], sizeof(INPUT));
+        // 将UTF-8字符串转换为宽字符字符串（Unicode）
+        int wideLen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
+        if (wideLen <= 0) {
+            return false;
+        }
+        
+        std::wstring wideText(wideLen - 1, 0); // -1 排除终止符
+        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &wideText[0], wideLen);
+        
+        for (wchar_t wc : wideText) {
+            // 对于ASCII字符，使用虚拟键码方式
+            if (wc < 128) {
+                char c = static_cast<char>(wc);
+                SHORT vk = VkKeyScanA(c);
+                if (vk == -1) {
+                    continue;
+                }
+                
+                BYTE vkCode = LOBYTE(vk);
+                BYTE shiftState = HIBYTE(vk);
+                
+                // 如果需要 Shift
+                if (shiftState & 1) {
+                    INPUT shiftDown = {};
+                    shiftDown.type = INPUT_KEYBOARD;
+                    shiftDown.ki.wVk = VK_SHIFT;
+                    SendInput(1, &shiftDown, sizeof(INPUT));
+                }
+                
+                // 按键按下
+                INPUT keyDown = {};
+                keyDown.type = INPUT_KEYBOARD;
+                keyDown.ki.wVk = vkCode;
+                SendInput(1, &keyDown, sizeof(INPUT));
+                
+                // 按键释放
+                INPUT keyUp = {};
+                keyUp.type = INPUT_KEYBOARD;
+                keyUp.ki.wVk = vkCode;
+                keyUp.ki.dwFlags = KEYEVENTF_KEYUP;
+                SendInput(1, &keyUp, sizeof(INPUT));
+                
+                // 释放 Shift
+                if (shiftState & 1) {
+                    INPUT shiftUp = {};
+                    shiftUp.type = INPUT_KEYBOARD;
+                    shiftUp.ki.wVk = VK_SHIFT;
+                    shiftUp.ki.dwFlags = KEYEVENTF_KEYUP;
+                    SendInput(1, &shiftUp, sizeof(INPUT));
+                }
+            } else {
+                // 对于非ASCII字符（如中文），使用Unicode输入
+                INPUT inputs[2] = {};
+                
+                // 按键按下（Unicode）
+                inputs[0].type = INPUT_KEYBOARD;
+                inputs[0].ki.wScan = wc;
+                inputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
+                
+                // 按键释放（Unicode）
+                inputs[1].type = INPUT_KEYBOARD;
+                inputs[1].ki.wScan = wc;
+                inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+                
+                SendInput(2, inputs, sizeof(INPUT));
             }
             
             Sleep(10);
@@ -494,11 +700,31 @@ private:
 
     // 执行 PowerShell 命令（无输出）
     bool executePowerShellCommand(const std::string& command) {
-        // 构建 PowerShell 命令行
-        std::string psCommand = "powershell.exe -Command \"" + command + "\"";
+        // 安全检查：验证命令是否允许执行
+        if (!isCommandAllowed(command)) {
+            log("命令被安全策略阻止: " + command);
+            return false;
+        }
+
+        // 使用安全的命令构造函数
+        std::string psCommand = ConstructPowerShellCommand(command);
         
         STARTUPINFOA si = { sizeof(si) };
         PROCESS_INFORMATION pi;
+        
+        // 创建Job Object以限制资源
+        HANDLE hJob = CreateJobObject(NULL, NULL);
+        if (hJob) {
+            JOBOBJECT_BASIC_LIMIT_INFORMATION jobLimits = {0};
+            jobLimits.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS | 
+                                   JOB_OBJECT_LIMIT_PROCESS_TIME |
+                                   JOB_OBJECT_LIMIT_WORKINGSET;
+            jobLimits.ActiveProcessLimit = 3;  // 最多3个子进程
+            jobLimits.PerProcessUserTimeLimit.QuadPart = 10000000LL * 10; // 10秒CPU时间
+            jobLimits.MinimumWorkingSetSize = 0;
+            jobLimits.MaximumWorkingSetSize = 100 * 1024 * 1024; // 100MB内存
+            SetInformationJobObject(hJob, JobObjectBasicLimitInformation, &jobLimits, sizeof(jobLimits));
+        }
         
         BOOL success = CreateProcessA(
             NULL,
@@ -514,20 +740,45 @@ private:
         );
         
         if (!success) {
+            if (hJob) CloseHandle(hJob);
             return false;
         }
         
+        // 将进程加入Job Object以应用限制
+        if (hJob) {
+            AssignProcessToJobObject(hJob, pi.hProcess);
+        }
+        
         // 等待进程完成
-        WaitForSingleObject(pi.hProcess, 5000); // 最多等待5秒
+        WaitForSingleObject(pi.hProcess, 10000); // 最多等待10秒
         
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+        if (hJob) CloseHandle(hJob);
         
         return true;
     }
 
+    // 构造安全的 PowerShell 命令
+    std::string ConstructPowerShellCommand(const std::string& script) {
+        // 1. 强制进入受限语言模式
+        std::string constrainedMode = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; ";
+        // 2. 设置严格的执行策略
+        std::string executionPolicy = " -ExecutionPolicy Restricted ";
+        // 3. 禁止加载配置文件
+        std::string noProfile = " -NoProfile ";
+        // 4. 构造完整的命令
+        return "powershell.exe" + noProfile + executionPolicy + "-Command \"& { " + constrainedMode + escapeCommand(script) + " }\"";
+    }
+
     // 执行 PowerShell 命令并捕获输出
     std::string executePowerShellCommandWithOutput(const std::string& command) {
+        // 安全检查：验证命令是否允许执行
+        if (!isCommandAllowed(command)) {
+            log("命令被安全策略阻止: " + command);
+            return "错误: 命令被安全策略阻止";
+        }
+
         std::string output;
         
         // 创建管道用于捕获输出
@@ -544,8 +795,8 @@ private:
         // 确保读取端不从子进程继承
         SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
         
-        // 构建 PowerShell 命令行
-        std::string psCommand = "powershell.exe -Command \"" + command + "\"";
+        // 使用安全的命令构造函数
+        std::string psCommand = ConstructPowerShellCommand(command);
         
         STARTUPINFOA si = { sizeof(si) };
         si.dwFlags = STARTF_USESTDHANDLES;
@@ -553,6 +804,20 @@ private:
         si.hStdError = hWritePipe;
         
         PROCESS_INFORMATION pi;
+        
+        // 创建Job Object以限制资源
+        HANDLE hJob = CreateJobObject(NULL, NULL);
+        if (hJob) {
+            JOBOBJECT_BASIC_LIMIT_INFORMATION jobLimits = {0};
+            jobLimits.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS | 
+                                   JOB_OBJECT_LIMIT_PROCESS_TIME |
+                                   JOB_OBJECT_LIMIT_WORKINGSET;
+            jobLimits.ActiveProcessLimit = 3;  // 最多3个子进程
+            jobLimits.PerProcessUserTimeLimit.QuadPart = 10000000LL * 10; // 10秒CPU时间
+            jobLimits.MinimumWorkingSetSize = 0;
+            jobLimits.MaximumWorkingSetSize = 100 * 1024 * 1024; // 100MB内存
+            SetInformationJobObject(hJob, JobObjectBasicLimitInformation, &jobLimits, sizeof(jobLimits));
+        }
         
         BOOL success = CreateProcessA(
             NULL,
@@ -570,7 +835,13 @@ private:
         if (!success) {
             CloseHandle(hReadPipe);
             CloseHandle(hWritePipe);
+            if (hJob) CloseHandle(hJob);
             return "";
+        }
+        
+        // 将进程加入Job Object以应用限制
+        if (hJob) {
+            AssignProcessToJobObject(hJob, pi.hProcess);
         }
         
         // 关闭写入端，开始读取
@@ -585,11 +856,12 @@ private:
         }
         
         // 等待进程完成
-        WaitForSingleObject(pi.hProcess, 10000); // 最多等待10秒
+        WaitForSingleObject(pi.hProcess, 15000); // 最多等待15秒
         
         CloseHandle(hReadPipe);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+        if (hJob) CloseHandle(hJob);
         
         return output;
     }

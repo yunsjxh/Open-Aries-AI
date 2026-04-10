@@ -294,10 +294,26 @@ private:
                 pos = valEnd + 1;
             } else {
                 // 无引号值
-                size_t valEnd = actionStr.find_first_of(",)", valStart);
-                if (valEnd == std::string::npos) valEnd = actionStr.length();
-                value = trim(actionStr.substr(valStart, valEnd - valStart));
-                pos = valEnd;
+                // 特殊处理：如果值以 '[' 开头，需要找到匹配的 ']'
+                if (actionStr[valStart] == '[') {
+                    size_t bracketEnd = actionStr.find(']', valStart);
+                    if (bracketEnd != std::string::npos) {
+                        value = trim(actionStr.substr(valStart, bracketEnd - valStart + 1));
+                        pos = bracketEnd + 1;
+                    } else {
+                        // 未找到匹配的 ']'，取到下一个逗号或右括号
+                        size_t valEnd = actionStr.find_first_of(",)", valStart);
+                        if (valEnd == std::string::npos) valEnd = actionStr.length();
+                        value = trim(actionStr.substr(valStart, valEnd - valStart));
+                        pos = valEnd;
+                    }
+                } else {
+                    // 普通无引号值
+                    size_t valEnd = actionStr.find_first_of(",)", valStart);
+                    if (valEnd == std::string::npos) valEnd = actionStr.length();
+                    value = trim(actionStr.substr(valStart, valEnd - valStart));
+                    pos = valEnd;
+                }
             }
             
             fields[key] = value;

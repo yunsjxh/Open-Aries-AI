@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <iostream>
 
 namespace aries {
 
@@ -85,16 +86,19 @@ public:
     AIProviderPtr createProvider(const std::string& name) {
         auto* config = getConfig(name);
         if (!config) {
+            std::cerr << "[调试] createProvider: getConfig(" << name << ") 返回 nullptr" << std::endl;
             return nullptr;
         }
         
         // 尝试从安全存储加载 API Key
         std::string apiKey = SecureStorage::loadApiKey(name);
+        std::cerr << "[调试] createProvider: loadApiKey(" << name << ") 返回长度=" << apiKey.length() << std::endl;
         if (!apiKey.empty()) {
             config->apiKey = apiKey;
         }
         
         if (config->apiKey.empty()) {
+            std::cerr << "[调试] createProvider: config->apiKey 为空" << std::endl;
             return nullptr;
         }
         
