@@ -92,8 +92,184 @@ public:
     static bool deleteAllApiKeys() {
         return deleteApiKey("siliconflow");
     }
+    
+    // 保存自定义提供商配置（支持多个）
+    // 格式: baseUrl|modelName|apiKey
+    static bool saveCustomProvider(const std::string& name, const std::string& baseUrl, 
+                                    const std::string& modelName, const std::string& apiKey) {
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) {
+            return false;
+        }
+        
+        std::string salt = generateSalt();
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        
+        // 格式: baseUrl|modelName|apiKey
+        std::string data = baseUrl + "|" + modelName + "|" + apiKey;
+        std::string encrypted = xorEncrypt(data, hashedKey);
+        std::string hexEncrypted = stringToHex(encrypted);
+        std::string obfuscated = obfuscateWithRandomChars(hexEncrypted);
+        
+        std::ofstream file(getCustomProviderPath(name), std::ios::out);
+        if (!file.is_open()) {
+            return false;
+        }
+        
+        file << salt << std::endl;
+        file << obfuscated << std::endl;
+        file.close();
+        
+        // 同时更新自定义提供商列表
+        addCustomProviderToList(name);
+        
+        return true;
+    }
+    
+    // 加载自定义提供商配置
+    // 返回: {baseUrl, modelName, apiKey}
+    static std::tuple<std::string, std::string, std::string> loadCustomProvider(const std::string& name) {
+        std::ifstream file(getCustomProviderPath(name), std::ios::in);
+        if (!file.is_open()) {
+            return {"", "", ""};
+        }
+        
+        std::string salt;
+        std::string obfuscated;
+        
+        std::getline(file, salt);
+        std::getline(file, obfuscated);
+        file.close();
+        
+        if (salt.empty() || obfuscated.empty()) {
+            return {"", "", ""};
+        }
+        
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) {
+            return {"", "", ""};
+        }
+        
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
+        std::string encrypted = hexToString(hexEncrypted);
+        if (encrypted.empty()) {
+            return {"", "", ""};
+        }
+        
+        std::string decrypted = xorEncrypt(encrypted, hashedKey);
+        
+        // 解析 baseUrl|modelName|apiKey
+        std::vector<std::string> parts;
+        size_t start = 0;
+        size_t end = decrypted.find('|');
+        while (end != std::string::npos) {
+            parts.push_back(decrypted.substr(start, end - start));
+            start = end + 1;
+            end = decrypted.find('|', start);
+        }
+        parts.push_back(decrypted.substr(start));
+        
+        if (parts.size() >= 3) {
+            return {parts[0], parts[1], parts[2]};
+        }
+        
+        return {"", "", ""};
+    }
+    
+    // 检查是否已保存指定名称的自定义提供商
+    static bool hasCustomProvider(const std::string& name) {
+        std::ifstream file(getCustomProviderPath(name));
+        return file.good();
+    }
+    
+    // 删除指定名称的自定义提供商
+    static bool deleteCustomProvider(const std::string& name) {
+        removeCustomProviderFromList(name);
+        return DeleteFileA(getCustomProviderPath(name).c_str()) != 0;
+    }
+    
+    // 获取所有自定义提供商名称列表
+    static std::vector<std::string> getCustomProviderList() {
+        std::vector<std::string> providers;
+        std::ifstream file(getCustomProviderListPath(), std::ios::in);
+        if (file.is_open()) {
+            std::string name;
+            while (std::getline(file, name)) {
+                if (!name.empty()) {
+                    providers.push_back(name);
+                }
+            }
+            file.close();
+        }
+        return providers;
+    }
+    
+    // 获取自定义提供商数量
+    static int getCustomProviderCount() {
+        return (int)getCustomProviderList().size();
+    }
 
 private:
+    // 添加自定义提供商到列表
+    static void addCustomProviderToList(const std::string& name) {
+        auto providers = getCustomProviderList();
+        // 检查是否已存在
+        if (std::find(providers.begin(), providers.end(), name) == providers.end()) {
+            providers.push_back(name);
+            // 保存列表
+            std::ofstream file(getCustomProviderListPath(), std::ios::out);
+            if (file.is_open()) {
+                for (const auto& p : providers) {
+                    file << p << std::endl;
+                }
+                file.close();
+            }
+        }
+    }
+    
+    // 从列表中移除自定义提供商
+    static void removeCustomProviderFromList(const std::string& name) {
+        auto providers = getCustomProviderList();
+        auto it = std::find(providers.begin(), providers.end(), name);
+        if (it != providers.end()) {
+            providers.erase(it);
+            // 保存列表
+            std::ofstream file(getCustomProviderListPath(), std::ios::out);
+            if (file.is_open()) {
+                for (const auto& p : providers) {
+                    file << p << std::endl;
+                }
+                file.close();
+            }
+        }
+    }
+    
+    // 获取自定义提供商存储路径
+    static std::string getCustomProviderPath(const std::string& name) {
+        char path[MAX_PATH];
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        std::string exePath(path);
+        size_t lastSlash = exePath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            return exePath.substr(0, lastSlash) + "\\.custom_provider_" + name + "_secure";
+        }
+        return ".custom_provider_" + name + "_secure";
+    }
+    
+    // 获取自定义提供商列表文件路径
+    static std::string getCustomProviderListPath() {
+        char path[MAX_PATH];
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        std::string exePath(path);
+        size_t lastSlash = exePath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            return exePath.substr(0, lastSlash) + "\\.custom_provider_list";
+        }
+        return ".custom_provider_list";
+    }
     // 获取存储路径 (支持多提供商)
     static std::string getStoragePath(const std::string& provider) {
         char path[MAX_PATH];
