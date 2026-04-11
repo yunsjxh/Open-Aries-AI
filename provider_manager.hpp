@@ -3,46 +3,135 @@
 #include "ai_provider.hpp"
 #include "openai_compatible_provider.hpp"
 #include "secure_storage.hpp"
+
 #include <map>
 #include <vector>
+#include <string>
+#include <memory>
 #include <algorithm>
 #include <cctype>
-#include <iostream>
+#include <mutex>
 
 namespace aries {
 
-// 模型配置
+// =======================
+// Model Config
+// =======================
 struct ModelConfig {
     std::string name;
-    bool supportsVision;
-    bool supportsAudio;
-    bool supportsVideo;
+    bool supportsVision = false;
+    bool supportsAudio = false;
+    bool supportsVideo = false;
 };
 
-// 提供商配置
+// =======================
+// Provider Config
+// =======================
 struct ProviderConfig {
     std::string name;
     std::string apiKey;
     std::string baseUrl;
     std::string modelName;
-    bool supportsVision;
-    bool supportsAudio;
-    bool supportsVideo;
-    std::vector<ModelConfig> availableModels;  // 可用模型列表
+
+    bool supportsVision = false;
+    bool supportsAudio = false;
+    bool supportsVideo = false;
+
+    std::vector<ModelConfig> availableModels;
 };
 
-// 提供商管理器
+// =======================
+// Provider Factory（纯构造）
+// =======================
+class ProviderFactory {
+public:
+    AIProviderPtr create(const ProviderConfig& cfg, const std::string& apiKey) {
+        if (apiKey.empty()) return nullptr;
+
+        return std::make_shared<OpenAICompatibleProvider>(
+            apiKey,
+            cfg.baseUrl,
+            cfg.modelName,
+            cfg.supportsVision,
+            cfg.supportsAudio,
+            cfg.supportsVideo
+        );
+    }
+};
+
+
+class ProviderRegistry {
+public:
+    void registerProvider(const ProviderConfig& cfg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        configs_[cfg.name] = cfg;
+    }
+
+    const ProviderConfig* get(const std::string& name) const {
+        auto it = configs_.find(name);
+        if (it == configs_.end()) return nullptr;
+        return &it->second;
+    }
+
+    ProviderConfig* getMutable(const std::string& name) {
+        auto it = configs_.find(name);
+        if (it == configs_.end()) return nullptr;
+        return &it->second;
+    }
+
+    std::vector<std::string> list() const {
+        std::vector<std::string> out;
+        for (auto& [k, _] : configs_) out.push_back(k);
+        return out;
+    }
+
+private:
+    std::map<std::string, ProviderConfig> configs_;
+    mutable std::mutex mutex_;
+};
+
+// =======================
+// Provider Context（运行态）
+// =======================
+class ProviderContext {
+public:
+    void set(const std::string& name, AIProviderPtr provider) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        currentName_ = name;
+        current_ = std::move(provider);
+    }
+
+    AIProviderPtr get() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return current_;
+    }
+
+    std::string name() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return currentName_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::string currentName_;
+    AIProviderPtr current_;
+};
+
+// =======================
+// ProviderManager（协调层）
+// =======================
 class ProviderManager {
 public:
-    static ProviderManager& getInstance() {
-        static ProviderManager instance;
-        return instance;
+    static ProviderManager& instance() {
+        static ProviderManager inst;
+        return inst;
     }
-    
-    // 注册内置提供商配置
+
+    // -----------------------
+    // 注册内置 Provider
+    // -----------------------
     void registerBuiltInProviders() {
-        // 智谱 AI
-        registerProviderConfig({
+        registry_.registerProvider({
             "zhipu",
             "",
             "https://open.bigmodel.cn/api/paas/v4",
@@ -58,170 +147,109 @@ public:
             }
         });
     }
-    
-    // 注册提供商配置
-    void registerProviderConfig(const ProviderConfig& config) {
-        configs_[config.name] = config;
-    }
-    
-    // 获取所有提供商名称
-    std::vector<std::string> getProviderNames() const {
-        std::vector<std::string> names;
-        for (const auto& [name, config] : configs_) {
-            names.push_back(name);
-        }
-        return names;
-    }
-    
-    // 获取提供商配置
-    ProviderConfig* getConfig(const std::string& name) {
-        auto it = configs_.find(name);
-        if (it != configs_.end()) {
-            return &it->second;
-        }
-        return nullptr;
-    }
-    
-    // 创建提供商实例
+
     AIProviderPtr createProvider(const std::string& name) {
-        auto* config = getConfig(name);
-        if (!config) {
-            std::cerr << "[调试] createProvider: getConfig(" << name << ") 返回 nullptr" << std::endl;
-            return nullptr;
-        }
-        
-        // 尝试从安全存储加载 API Key
+        const ProviderConfig* cfg = registry_.get(name);
+        if (!cfg) return nullptr;
+
         std::string apiKey = SecureStorage::loadApiKey(name);
-        std::cerr << "[调试] createProvider: loadApiKey(" << name << ") 返回长度=" << apiKey.length() << std::endl;
-        if (!apiKey.empty()) {
-            config->apiKey = apiKey;
+        if (apiKey.empty()) {
+            // fallback to config memory
+            apiKey = cfg->apiKey;
         }
-        
-        if (config->apiKey.empty()) {
-            std::cerr << "[调试] createProvider: config->apiKey 为空" << std::endl;
-            return nullptr;
-        }
-        
-        return std::make_shared<OpenAICompatibleProvider>(
-            config->apiKey,
-            config->baseUrl,
-            config->modelName,
-            config->supportsVision,
-            config->supportsAudio,
-            config->supportsVideo
-        );
+
+        return factory_.create(*cfg, apiKey);
     }
-    
-    // 设置当前提供商
-    void setCurrentProvider(const std::string& name) {
-        currentProviderName_ = name;
-        currentProvider_ = createProvider(name);
+
+    // -----------------------
+    // 设置当前 Provider（保证一致性）
+    // -----------------------
+    bool setCurrentProvider(const std::string& name) {
+        auto provider = createProvider(name);
+        if (!provider) return false;
+
+        context_.set(name, provider);
+        return true;
     }
-    
-    // 获取当前提供商
+
     AIProviderPtr getCurrentProvider() const {
-        return currentProvider_;
+        return context_.get();
     }
-    
-    // 获取当前提供商名称
+
     std::string getCurrentProviderName() const {
-        return currentProviderName_;
+        return context_.name();
     }
-    
-    // 保存提供商 API Key
+
+    // -----------------------
+    // API Key 管理
+    // -----------------------
     bool saveProviderApiKey(const std::string& name, const std::string& apiKey) {
-        auto* config = getConfig(name);
-        if (config) {
-            config->apiKey = apiKey;
-        }
+        auto* cfg = registry_.getMutable(name);
+        if (cfg) cfg->apiKey = apiKey;
+
         return SecureStorage::saveApiKey(apiKey, name);
     }
-    
-    // 检查是否有保存的 API Key
+
     bool hasSavedApiKey(const std::string& name) const {
         return SecureStorage::hasSavedApiKey(name);
     }
-    
-    // 获取提供商信息字符串
+
+    std::vector<ModelConfig> getAvailableModels(const std::string& name) const {
+        const auto* cfg = registry_.get(name);
+        if (!cfg) return {};
+        return cfg->availableModels;
+    }
+
+    void setCurrentModel(const std::string& provider, const std::string& model) {
+        auto* cfg = registry_.getMutable(provider);
+        if (!cfg) return;
+
+        cfg->modelName = model;
+        for (const auto& m : cfg->availableModels) {
+            if (m.name == model) {
+                cfg->supportsVision = m.supportsVision;
+                cfg->supportsAudio = m.supportsAudio;
+                cfg->supportsVideo = m.supportsVideo;
+                return;
+            }
+        }
+        std::string lower = model;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        cfg->supportsVision =
+            lower.find("vision") != std::string::npos ||
+            lower.find("vl") != std::string::npos ||
+            lower.find("4v") != std::string::npos ||
+            lower.find("gpt-4o") != std::string::npos;
+
+        cfg->supportsAudio = false;
+        cfg->supportsVideo = false;
+    }
+
+    std::string getCurrentModel(const std::string& name) const {
+        const auto* cfg = registry_.get(name);
+        return cfg ? cfg->modelName : "";
+    }
     std::string getProviderInfo(const std::string& name) const {
-        auto it = configs_.find(name);
-        if (it != configs_.end()) {
-            const auto& c = it->second;
-            std::string info = c.name + " - " + c.modelName;
-            if (c.supportsVision) info += " [Vision]";
-            if (hasSavedApiKey(name)) info += " [已配置]";
-            return info;
-        }
-        return name;
+        const auto* cfg = registry_.get(name);
+        if (!cfg) return name;
+
+        std::string info = cfg->name + " - " + cfg->modelName;
+        if (cfg->supportsVision) info += " [Vision]";
+        if (hasSavedApiKey(name)) info += " [Configured]";
+        return info;
     }
-    
-    // 获取可用模型列表
-    std::vector<ModelConfig> getAvailableModels(const std::string& providerName) const {
-        auto it = configs_.find(providerName);
-        if (it != configs_.end()) {
-            return it->second.availableModels;
-        }
-        return {};
-    }
-    
-    // 设置当前模型
-    void setCurrentModel(const std::string& providerName, const std::string& modelName) {
-        auto* config = getConfig(providerName);
-        if (config) {
-            config->modelName = modelName;
-            
-            // 查找模型配置（如果在预设列表中）
-            bool foundInList = false;
-            for (const auto& model : config->availableModels) {
-                if (model.name == modelName) {
-                    config->supportsVision = model.supportsVision;
-                    config->supportsAudio = model.supportsAudio;
-                    config->supportsVideo = model.supportsVideo;
-                    foundInList = true;
-                    break;
-                }
-            }
-            
-            // 如果不在预设列表中，根据模型名称猜测是否支持视觉
-            if (!foundInList) {
-                std::string lowerModel = modelName;
-                std::transform(lowerModel.begin(), lowerModel.end(), lowerModel.begin(), ::tolower);
-                
-                // 常见视觉模型关键词
-                if (lowerModel.find("vision") != std::string::npos ||
-                    lowerModel.find("vl") != std::string::npos ||
-                    lowerModel.find("4v") != std::string::npos ||
-                    lowerModel.find("gpt-4o") != std::string::npos ||
-                    lowerModel.find("gemini") != std::string::npos ||
-                    lowerModel.find("claude-3") != std::string::npos) {
-                    config->supportsVision = true;
-                } else {
-                    config->supportsVision = false;
-                }
-                config->supportsAudio = false;
-                config->supportsVideo = false;
-            }
-        }
-    }
-    
-    // 获取当前模型名称
-    std::string getCurrentModel(const std::string& providerName) const {
-        auto it = configs_.find(providerName);
-        if (it != configs_.end()) {
-            return it->second.modelName;
-        }
-        return "";
+
+    std::vector<std::string> listProviders() const {
+        return registry_.list();
     }
 
 private:
     ProviderManager() = default;
-    ~ProviderManager() = default;
-    ProviderManager(const ProviderManager&) = delete;
-    ProviderManager& operator=(const ProviderManager&) = delete;
-    
-    std::map<std::string, ProviderConfig> configs_;
-    std::string currentProviderName_;
-    AIProviderPtr currentProvider_;
+
+    ProviderRegistry registry_;
+    ProviderFactory factory_;
+    ProviderContext context_;
 };
 
 } // namespace aries
