@@ -6,13 +6,10 @@
 #include <optional>
 #include <windows.h>
 #include <winhttp.h>
-#include <nlohmann/json.hpp>
 
 #pragma comment(lib, "winhttp.lib")
 
 namespace aries {
-
-using json = nlohmann::json;
 
 struct ReleaseInfo {
     std::string version;
@@ -31,6 +28,76 @@ struct HttpResponse {
     int statusCode = 0;
 };
 
+
+class SimpleJson {
+public:
+    static std::string getString(const std::string& json, const std::string& key) {
+        std::string pattern = "\"" + key + "\"";
+        size_t pos = json.find(pattern);
+        if (pos == std::string::npos) return "";
+
+        pos = json.find(':', pos);
+        if (pos == std::string::npos) return "";
+
+        pos++;
+
+        while (pos < json.size() && isspace((unsigned char)json[pos])) pos++;
+
+        if (pos >= json.size() || json[pos] != '"')
+            return "";
+
+        pos++;
+
+        std::string result;
+        while (pos < json.size()) {
+            char c = json[pos++];
+
+            if (c == '\\') {
+                if (pos >= json.size()) break;
+                char esc = json[pos++];
+
+                switch (esc) {
+                    case '"': result += '"'; break;
+                    case '\\': result += '\\'; break;
+                    case 'n': result += '\n'; break;
+                    case 'r': result += '\r'; break;
+                    case 't': result += '\t'; break;
+                    default: result += esc; break;
+                }
+            }
+            else if (c == '"') {
+                break;
+            }
+            else {
+                result += c;
+            }
+        }
+
+        return result;
+    }
+
+    static bool getBool(const std::string& json, const std::string& key, bool def = false) {
+        std::string pattern = "\"" + key + "\"";
+        size_t pos = json.find(pattern);
+        if (pos == std::string::npos) return def;
+
+        pos = json.find(':', pos);
+        if (pos == std::string::npos) return def;
+
+        pos++;
+
+        while (pos < json.size() && isspace((unsigned char)json[pos])) pos++;
+
+        if (json.compare(pos, 4, "true") == 0) return true;
+        if (json.compare(pos, 5, "false") == 0) return false;
+
+        return def;
+    }
+};
+
+// =========================
+// HTTP 客户端（WinHTTP）
+// =========================
 class HttpClient {
 public:
     static HttpResponse get(const std::wstring& host,
@@ -39,7 +106,7 @@ public:
         HttpResponse resp;
 
         HINTERNET hSession = WinHttpOpen(
-            L"Aries-UpdateChecker/2.0",
+            L"Aries-UpdateChecker/2.1",
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
             WINHTTP_NO_PROXY_NAME,
             WINHTTP_NO_PROXY_BYPASS, 0);
@@ -69,22 +136,27 @@ public:
             return resp;
         }
 
-        // headers
-        std::wstring headers = L"User-Agent: AriesUpdater\r\nAccept: application/vnd.github+json\r\n";
+        std::wstring headers =
+            L"User-Agent: AriesUpdater\r\n"
+            L"Accept: application/vnd.github+json\r\n"
+            L"X-GitHub-Api-Version: 2022-11-28\r\n";
 
         if (!token.empty()) {
             headers += L"Authorization: Bearer " +
-                       std::wstring(token.begin(), token.end()) + L"\r\n";
+                std::wstring(token.begin(), token.end()) + L"\r\n";
         }
 
-        WinHttpSendRequest(
-            hRequest,
-            headers.c_str(),
-            (DWORD)-1,
-            WINHTTP_NO_REQUEST_DATA,
-            0,
-            0,
-            0);
+        if (!WinHttpSendRequest(
+                hRequest,
+                headers.c_str(),
+                (DWORD)-1,
+                WINHTTP_NO_REQUEST_DATA,
+                0,
+                0,
+                0)) {
+            cleanup(hSession, hConnect, hRequest);
+            return resp;
+        }
 
         if (!WinHttpReceiveResponse(hRequest, NULL)) {
             cleanup(hSession, hConnect, hRequest);
@@ -110,16 +182,19 @@ public:
         }
 
         DWORD dwSize = 0;
+
         do {
-            WinHttpQueryDataAvailable(hRequest, &dwSize);
-            if (!dwSize) break;
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0)
+                break;
 
             std::string buffer;
             buffer.resize(dwSize);
 
             DWORD read = 0;
-            WinHttpReadData(hRequest, buffer.data(), dwSize, &read);
-            resp.body.append(buffer, 0, read);
+            if (!WinHttpReadData(hRequest, buffer.data(), dwSize, &read) || read == 0)
+                break;
+
+            resp.body.append(buffer.data(), read);
 
         } while (dwSize > 0);
 
@@ -135,6 +210,9 @@ private:
     }
 };
 
+// =========================
+// 版本比较
+// =========================
 class Version {
 public:
     static std::vector<int> parse(const std::string& v) {
@@ -148,6 +226,10 @@ public:
         std::string item;
 
         while (std::getline(ss, item, '.')) {
+            auto dash = item.find('-');
+            if (dash != std::string::npos)
+                item = item.substr(0, dash);
+
             try {
                 out.push_back(std::stoi(item));
             } catch (...) {
@@ -174,6 +256,9 @@ public:
     }
 };
 
+// =========================
+// 更新检查
+// =========================
 class UpdateChecker {
 public:
     static std::optional<ReleaseInfo> checkLatest(
@@ -202,20 +287,17 @@ private:
     static ReleaseInfo parse(const std::string& s) {
         ReleaseInfo r;
 
-        try {
-            auto j = json::parse(s);
+        r.version      = SimpleJson::getString(s, "tag_name");
+        r.name         = SimpleJson::getString(s, "name");
+        r.publishedAt  = SimpleJson::getString(s, "published_at");
+        r.body         = SimpleJson::getString(s, "body");
+        r.htmlUrl      = SimpleJson::getString(s, "html_url");
+        r.isPrerelease = SimpleJson::getBool(s, "prerelease", false);
 
-            r.version = j.value("tag_name", "");
-            r.name = j.value("name", "");
-            r.publishedAt = j.value("published_at", "");
-            r.body = j.value("body", "");
-            r.htmlUrl = j.value("html_url", "");
-            r.isPrerelease = j.value("prerelease", false);
+        r.success = !r.version.empty();
 
-            r.success = !r.version.empty();
-
-        } catch (const std::exception& e) {
-            r.errorMessage = e.what();
+        if (!r.success) {
+            r.errorMessage = "JSON parse failed or missing tag_name";
         }
 
         return r;
