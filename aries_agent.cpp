@@ -716,15 +716,21 @@ int main(int argc, char* argv[]) {
 
     int max_iterations = 10;
     int iteration = 0;
+    int totalSteps = 0;  // 总步数计数器（不重置）
     bool continueExecution = true;
+    bool shouldRetry = false;  // 重试标志
     
     while (continueExecution) {
         std::cout << std::endl;
-        // 第一次迭代不等待，后续迭代等待 1 秒
-        if (iteration > 0) {
+        
+        // 如果不是重试，且不是第一步，等待1秒
+        if (!shouldRetry && totalSteps > 0) {
             std::cout << "等待 1 秒..." << std::endl;
             Sleep(1000);
         }
+        
+        // 重置重试标志
+        shouldRetry = false;
 
         std::cout << "=== 迭代 " << (iteration + 1) << "/" << max_iterations << " ===" << std::endl;
         logMessage("=== 迭代 " + std::to_string(iteration + 1) + "/" + std::to_string(max_iterations) + " ===");
@@ -1204,8 +1210,8 @@ int main(int argc, char* argv[]) {
                 if (retryChoice == 'y' || retryChoice == 'Y') {
                     std::cout << "等待 1 秒后重试..." << std::endl;
                     Sleep(1000);
-                    iteration--; // 重试当前迭代
-                    continue;
+                    shouldRetry = true;  // 设置重试标志
+                    continue;  // 直接继续循环，不增加计数器
                 }
             }
 
@@ -1216,6 +1222,7 @@ int main(int argc, char* argv[]) {
 
         // 增加迭代计数
         iteration++;
+        totalSteps++;
         
         // 检查是否达到最大迭代次数
         if (iteration >= max_iterations) {
