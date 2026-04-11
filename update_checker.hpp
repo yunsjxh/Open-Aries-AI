@@ -1,319 +1,246 @@
 #pragma once
 
-#include <windows.h>
-#include <wininet.h>
 #include <string>
+#include <vector>
 #include <sstream>
-#include <iostream>
-#include "action_parser.hpp"
+#include <optional>
+#include <windows.h>
+#include <winhttp.h>
+#include <nlohmann/json.hpp>
 
-#pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "winhttp.lib")
 
 namespace aries {
 
+using json = nlohmann::json;
+
 struct ReleaseInfo {
     std::string version;
+    std::string name;
     std::string publishedAt;
     std::string body;
     std::string htmlUrl;
-    bool isPrerelease;
-    bool success;
+    bool isPrerelease = false;
+
+    bool success = false;
     std::string errorMessage;
+};
+
+struct HttpResponse {
+    std::string body;
+    int statusCode = 0;
+};
+
+class HttpClient {
+public:
+    static HttpResponse get(const std::wstring& host,
+                            const std::wstring& path,
+                            const std::string& token = "") {
+        HttpResponse resp;
+
+        HINTERNET hSession = WinHttpOpen(
+            L"Aries-UpdateChecker/2.0",
+            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            WINHTTP_NO_PROXY_NAME,
+            WINHTTP_NO_PROXY_BYPASS, 0);
+
+        if (!hSession) return resp;
+
+        HINTERNET hConnect = WinHttpConnect(
+            hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+
+        if (!hConnect) {
+            WinHttpCloseHandle(hSession);
+            return resp;
+        }
+
+        HINTERNET hRequest = WinHttpOpenRequest(
+            hConnect,
+            L"GET",
+            path.c_str(),
+            NULL,
+            WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES,
+            WINHTTP_FLAG_SECURE);
+
+        if (!hRequest) {
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return resp;
+        }
+
+        // headers
+        std::wstring headers = L"User-Agent: AriesUpdater\r\nAccept: application/vnd.github+json\r\n";
+
+        if (!token.empty()) {
+            headers += L"Authorization: Bearer " +
+                       std::wstring(token.begin(), token.end()) + L"\r\n";
+        }
+
+        WinHttpSendRequest(
+            hRequest,
+            headers.c_str(),
+            (DWORD)-1,
+            WINHTTP_NO_REQUEST_DATA,
+            0,
+            0,
+            0);
+
+        if (!WinHttpReceiveResponse(hRequest, NULL)) {
+            cleanup(hSession, hConnect, hRequest);
+            return resp;
+        }
+
+        DWORD status = 0;
+        DWORD size = sizeof(status);
+
+        WinHttpQueryHeaders(
+            hRequest,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &status,
+            &size,
+            WINHTTP_NO_HEADER_INDEX);
+
+        resp.statusCode = (int)status;
+
+        if (status != 200) {
+            cleanup(hSession, hConnect, hRequest);
+            return resp;
+        }
+
+        DWORD dwSize = 0;
+        do {
+            WinHttpQueryDataAvailable(hRequest, &dwSize);
+            if (!dwSize) break;
+
+            std::string buffer;
+            buffer.resize(dwSize);
+
+            DWORD read = 0;
+            WinHttpReadData(hRequest, buffer.data(), dwSize, &read);
+            resp.body.append(buffer, 0, read);
+
+        } while (dwSize > 0);
+
+        cleanup(hSession, hConnect, hRequest);
+        return resp;
+    }
+
+private:
+    static void cleanup(HINTERNET s, HINTERNET c, HINTERNET r) {
+        if (r) WinHttpCloseHandle(r);
+        if (c) WinHttpCloseHandle(c);
+        if (s) WinHttpCloseHandle(s);
+    }
+};
+
+class Version {
+public:
+    static std::vector<int> parse(const std::string& v) {
+        std::vector<int> out;
+        std::string s = v;
+
+        if (!s.empty() && (s[0] == 'v' || s[0] == 'V'))
+            s = s.substr(1);
+
+        std::stringstream ss(s);
+        std::string item;
+
+        while (std::getline(ss, item, '.')) {
+            try {
+                out.push_back(std::stoi(item));
+            } catch (...) {
+                out.push_back(0);
+            }
+        }
+        return out;
+    }
+
+    static int compare(const std::string& a, const std::string& b) {
+        auto A = parse(a);
+        auto B = parse(b);
+
+        size_t n = std::max(A.size(), B.size());
+
+        for (size_t i = 0; i < n; i++) {
+            int x = i < A.size() ? A[i] : 0;
+            int y = i < B.size() ? B[i] : 0;
+
+            if (x < y) return -1;
+            if (x > y) return 1;
+        }
+        return 0;
+    }
 };
 
 class UpdateChecker {
 public:
-    // 检查GitHub releases最新版本
-    static ReleaseInfo checkForUpdate(const std::string& repoUrl) {
-        ReleaseInfo info;
-        info.success = false;
-        
-        // 解析仓库地址获取 owner 和 repo
-        std::string owner, repo;
-        if (!parseRepoUrl(repoUrl, owner, repo)) {
-            info.errorMessage = "无法解析仓库地址";
-            return info;
-        }
-        
-        // 构建GitHub API URL
-        std::string apiUrl = "/repos/" + owner + "/" + repo + "/releases/latest";
-        
-        // 发送HTTP请求
-        std::string response = sendGitHubApiRequest(apiUrl);
-        if (response.empty()) {
-            info.errorMessage = "无法连接到GitHub API";
-            return info;
-        }
-        
-        // 解析JSON响应
-        return parseReleaseJson(response);
-    }
-    
-    // 获取所有releases
-    static std::vector<ReleaseInfo> getAllReleases(const std::string& repoUrl, int count = 5) {
-        std::vector<ReleaseInfo> releases;
-        
-        std::string owner, repo;
-        if (!parseRepoUrl(repoUrl, owner, repo)) {
-            return releases;
-        }
-        
-        std::string apiUrl = "/repos/" + owner + "/" + repo + "/releases?per_page=" + std::to_string(count);
-        
-        std::string response = sendGitHubApiRequest(apiUrl);
-        if (response.empty()) {
-            return releases;
-        }
-        
-        // 解析JSON数组
-        return parseReleasesArray(response);
-    }
-    
-    // 比较版本号
-    static int compareVersions(const std::string& v1, const std::string& v2) {
-        std::vector<int> ver1 = parseVersion(v1);
-        std::vector<int> ver2 = parseVersion(v2);
-        
-        size_t maxLen = std::max(ver1.size(), ver2.size());
-        for (size_t i = 0; i < maxLen; i++) {
-            int num1 = (i < ver1.size()) ? ver1[i] : 0;
-            int num2 = (i < ver2.size()) ? ver2[i] : 0;
-            
-            if (num1 < num2) return -1;
-            if (num1 > num2) return 1;
-        }
-        return 0;
+    static std::optional<ReleaseInfo> checkLatest(
+        const std::string& repoUrl,
+        const std::string& token = "") {
+
+        auto [owner, repo] = parseRepo(repoUrl);
+        if (owner.empty()) return std::nullopt;
+
+        std::wstring host = L"api.github.com";
+        std::wstring path = L"/repos/" +
+            std::wstring(owner.begin(), owner.end()) +
+            L"/" +
+            std::wstring(repo.begin(), repo.end()) +
+            L"/releases/latest";
+
+        auto resp = HttpClient::get(host, path, token);
+
+        if (resp.statusCode != 200 || resp.body.empty())
+            return std::nullopt;
+
+        return parse(resp.body);
     }
 
 private:
-    static bool parseRepoUrl(const std::string& url, std::string& owner, std::string& repo) {
-        // 支持格式: https://github.com/owner/repo/releases
-        // 或: https://github.com/owner/repo
-        size_t githubPos = url.find("github.com/");
-        if (githubPos == std::string::npos) {
-            return false;
+    static ReleaseInfo parse(const std::string& s) {
+        ReleaseInfo r;
+
+        try {
+            auto j = json::parse(s);
+
+            r.version = j.value("tag_name", "");
+            r.name = j.value("name", "");
+            r.publishedAt = j.value("published_at", "");
+            r.body = j.value("body", "");
+            r.htmlUrl = j.value("html_url", "");
+            r.isPrerelease = j.value("prerelease", false);
+
+            r.success = !r.version.empty();
+
+        } catch (const std::exception& e) {
+            r.errorMessage = e.what();
         }
-        
-        std::string path = url.substr(githubPos + 11); // 跳过 "github.com/"
-        
-        // 移除末尾的 "/releases" 等
-        size_t releasesPos = path.find("/releases");
-        if (releasesPos != std::string::npos) {
-            path = path.substr(0, releasesPos);
-        }
-        
-        // 解析 owner 和 repo
-        size_t slashPos = path.find('/');
-        if (slashPos == std::string::npos) {
-            return false;
-        }
-        
-        owner = path.substr(0, slashPos);
-        repo = path.substr(slashPos + 1);
-        
-        // 移除末尾的斜杠
-        if (!repo.empty() && repo.back() == '/') {
-            repo.pop_back();
-        }
-        
-        return !owner.empty() && !repo.empty();
+
+        return r;
     }
-    
-    static std::string sendGitHubApiRequest(const std::string& apiPath) {
-        HINTERNET hInternet = InternetOpenA("Open-Aries-AI-UpdateChecker/1.0", 
-                                            INTERNET_OPEN_TYPE_PRECONFIG, 
-                                            NULL, NULL, 0);
-        if (!hInternet) {
-            return "";
-        }
-        
-        HINTERNET hConnect = InternetConnectA(hInternet, 
-                                              "api.github.com", 
-                                              INTERNET_DEFAULT_HTTPS_PORT, 
-                                              NULL, NULL, 
-                                              INTERNET_SERVICE_HTTP, 0, 0);
-        if (!hConnect) {
-            InternetCloseHandle(hInternet);
-            return "";
-        }
-        
-        HINTERNET hRequest = HttpOpenRequestA(hConnect, 
-                                              "GET", 
-                                              apiPath.c_str(), 
-                                              NULL, NULL, NULL, 
-                                              INTERNET_FLAG_SECURE, 0);
-        if (!hRequest) {
-            InternetCloseHandle(hConnect);
-            InternetCloseHandle(hInternet);
-            return "";
-        }
-        
-        // 添加User-Agent头（GitHub API要求）
-        HttpAddRequestHeadersA(hRequest, 
-                               "User-Agent: Open-Aries-AI-UpdateChecker\r\n", 
-                               -1, HTTP_ADDREQ_FLAG_ADD);
-        
-        BOOL sent = HttpSendRequestA(hRequest, NULL, 0, NULL, 0);
-        if (!sent) {
-            InternetCloseHandle(hRequest);
-            InternetCloseHandle(hConnect);
-            InternetCloseHandle(hInternet);
-            return "";
-        }
-        
-        // 读取响应
-        std::string response;
-        char buffer[4096];
-        DWORD bytesRead;
-        
-        while (InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
-            response.append(buffer, bytesRead);
-        }
-        
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        
-        return response;
-    }
-    
-    static ReleaseInfo parseReleaseJson(const std::string& json) {
-        ReleaseInfo info;
-        info.success = false;
-        
-        // 简单JSON解析
-        info.version = extractJsonString(json, "tag_name");
-        info.publishedAt = extractJsonString(json, "published_at");
-        info.body = extractJsonString(json, "body");
-        info.htmlUrl = extractJsonString(json, "html_url");
-        info.isPrerelease = (json.find("\"prerelease\":true") != std::string::npos);
-        
-        if (!info.version.empty()) {
-            info.success = true;
-        } else {
-            info.errorMessage = "无法解析版本信息";
-        }
-        
-        return info;
-    }
-    
-    static std::vector<ReleaseInfo> parseReleasesArray(const std::string& json) {
-        std::vector<ReleaseInfo> releases;
-        
-        // 简单解析JSON数组
-        size_t pos = 0;
-        while ((pos = json.find("{", pos)) != std::string::npos) {
-            size_t endPos = findMatchingBrace(json, pos);
-            if (endPos == std::string::npos) break;
-            
-            std::string releaseJson = json.substr(pos, endPos - pos + 1);
-            ReleaseInfo info = parseReleaseJson(releaseJson);
-            if (info.success) {
-                releases.push_back(info);
-            }
-            
-            pos = endPos + 1;
-        }
-        
-        return releases;
-    }
-    
-    static size_t findMatchingBrace(const std::string& str, size_t start) {
-        int depth = 1;
-        size_t pos = start + 1;
-        
-        while (pos < str.length() && depth > 0) {
-            if (str[pos] == '{') depth++;
-            else if (str[pos] == '}') depth--;
-            else if (str[pos] == '"') {
-                // 跳过字符串
-                pos++;
-                while (pos < str.length() && str[pos] != '"') {
-                    if (str[pos] == '\\' && pos + 1 < str.length()) {
-                        pos += 2;
-                    } else {
-                        pos++;
-                    }
-                }
-            }
-            pos++;
-        }
-        
-        return (depth == 0) ? pos - 1 : std::string::npos;
-    }
-    
-    static std::string extractJsonString(const std::string& json, const std::string& key) {
-        std::string searchKey = "\"" + key + "\"";
-        size_t keyPos = json.find(searchKey);
-        if (keyPos == std::string::npos) {
-            return "";
-        }
-        
-        size_t colonPos = json.find(":", keyPos);
-        if (colonPos == std::string::npos) {
-            return "";
-        }
-        
-        size_t valueStart = json.find_first_of("\"", colonPos);
-        if (valueStart == std::string::npos) {
-            // 可能是布尔值或null
-            size_t boolStart = json.find_first_not_of(" \t\n\r", colonPos + 1);
-            if (boolStart != std::string::npos) {
-                size_t boolEnd = json.find_first_of(",}\n", boolStart);
-                if (boolEnd != std::string::npos) {
-                    return json.substr(boolStart, boolEnd - boolStart);
-                }
-            }
-            return "";
-        }
-        
-        valueStart++; // 跳过开头的引号
-        
-        std::string value;
-        for (size_t i = valueStart; i < json.length(); i++) {
-            if (json[i] == '"' && (i == valueStart || json[i-1] != '\\')) {
-                break;
-            }
-            if (json[i] == '\\' && i + 1 < json.length()) {
-                char next = json[i + 1];
-                switch (next) {
-                    case 'n': value += '\n'; break;
-                    case 'r': value += '\r'; break;
-                    case 't': value += '\t'; break;
-                    case '"': value += '"'; break;
-                    case '\\': value += '\\'; break;
-                    default: value += next;
-                }
-                i++;
-            } else {
-                value += json[i];
-            }
-        }
-        
-        return value;
-    }
-    
-    static std::vector<int> parseVersion(const std::string& version) {
-        std::vector<int> result;
-        std::string cleanVersion = version;
-        
-        // 移除开头的 'v' 或 'V'
-        if (!cleanVersion.empty() && (cleanVersion[0] == 'v' || cleanVersion[0] == 'V')) {
-            cleanVersion = cleanVersion.substr(1);
-        }
-        
-        // 解析版本号
-        std::stringstream ss(cleanVersion);
-        std::string part;
-        while (std::getline(ss, part, '.')) {
-            try {
-                result.push_back(std::stoi(part));
-            } catch (...) {
-                result.push_back(0);
-            }
-        }
-        
-        return result;
+
+    static std::pair<std::string, std::string> parseRepo(const std::string& url) {
+        std::string u = url;
+
+        auto pos = u.find("github.com/");
+        if (pos == std::string::npos)
+            return {};
+
+        u = u.substr(pos + 11);
+
+        if (u.ends_with("/"))
+            u.pop_back();
+
+        if (u.ends_with(".git"))
+            u = u.substr(0, u.size() - 4);
+
+        auto slash = u.find('/');
+        if (slash == std::string::npos)
+            return {};
+
+        return {u.substr(0, slash), u.substr(slash + 1)};
     }
 };
 
