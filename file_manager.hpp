@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <ctime>
 #include <iomanip>
+#include <codecvt>
+#include <locale>
 
 namespace aries {
 
@@ -132,24 +134,73 @@ public:
         return files;
     }
     
-    // 读取文本文件
-    static std::string readTextFile(const std::string& path, int maxLines = -1) {
-        std::ifstream file(path, std::ios::in | std::ios::binary);
-        if (!file.is_open()) {
-            return "Error: 无法打开文件 " + path;
+    // 获取文件打开失败的详细原因
+    static std::string getFileErrorReason(const std::string& path) {
+        // 将UTF-8路径转换为宽字符路径
+        std::wstring wPath = utf8ToWide(path);
+        
+        // 检查文件是否存在
+        DWORD attributes = GetFileAttributesW(wPath.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+                return "文件不存在: " + path;
+            } else if (error == ERROR_ACCESS_DENIED) {
+                return "无权限访问文件: " + path;
+            } else {
+                return "无法访问文件 (错误码: " + std::to_string(error) + "): " + path;
+            }
         }
         
-        std::stringstream buffer;
-        std::string line;
+        // 检查是否是目录
+        if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+            return "路径是目录而非文件: " + path;
+        }
+        
+        // 检查是否被占用（尝试以独占方式打开）
+        HANDLE hFile = CreateFileW(wPath.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_SHARING_VIOLATION) {
+                return "文件被其他程序占用: " + path;
+            } else if (error == ERROR_ACCESS_DENIED) {
+                return "无权限读取文件: " + path;
+            }
+        } else {
+            CloseHandle(hFile);
+        }
+        
+        return "无法打开文件: " + path;
+    }
+    
+    // 读取文本文件（支持Unicode路径）
+    static std::string readTextFile(const std::string& path, int maxLines = -1) {
+        // 将UTF-8路径转换为宽字符路径
+        std::wstring wPath = utf8ToWide(path);
+        
+        // 使用宽字符路径打开文件
+        std::wifstream file(wPath.c_str(), std::ios::in | std::ios::binary);
+        if (!file.is_open()) {
+            return "Error: " + getFileErrorReason(path);
+        }
+        
+        // 设置文件流的locale以支持UTF-8
+        file.imbue(std::locale(file.getloc(), new std::codecvt_utf8<wchar_t>));
+        
+        std::wstringstream buffer;
+        std::wstring line;
         int lineCount = 0;
         
         while (std::getline(file, line) && (maxLines < 0 || lineCount < maxLines)) {
-            buffer << line << "\n";
+            buffer << line << L"\n";
             lineCount++;
         }
         
         file.close();
-        return buffer.str();
+        
+        // 将宽字符内容转换回UTF-8
+        std::wstring content = buffer.str();
+        return wideToUtf8(content);
     }
     
     // 读取文件的前N行
@@ -157,52 +208,64 @@ public:
         return readTextFile(path, lines);
     }
     
-    // 读取文件的后N行
+    // 读取文件的后N行（支持Unicode路径）
     static std::string readFileTail(const std::string& path, int lines = 50) {
-        std::ifstream file(path, std::ios::in | std::ios::binary);
+        // 将UTF-8路径转换为宽字符路径
+        std::wstring wPath = utf8ToWide(path);
+        
+        std::wifstream file(wPath.c_str(), std::ios::in | std::ios::binary);
         if (!file.is_open()) {
-            return "Error: 无法打开文件 " + path;
+            return "Error: " + getFileErrorReason(path);
         }
         
+        // 设置文件流的locale以支持UTF-8
+        file.imbue(std::locale(file.getloc(), new std::codecvt_utf8<wchar_t>));
+        
         // 读取所有行
-        std::vector<std::string> allLines;
-        std::string line;
+        std::vector<std::wstring> allLines;
+        std::wstring line;
         while (std::getline(file, line)) {
             allLines.push_back(line);
         }
         file.close();
         
         // 返回后N行
-        std::stringstream buffer;
+        std::wstringstream buffer;
         int start = std::max(0, (int)allLines.size() - lines);
         for (int i = start; i < (int)allLines.size(); i++) {
-            buffer << allLines[i] << "\n";
+            buffer << allLines[i] << L"\n";
         }
         
-        return buffer.str();
+        return wideToUtf8(buffer.str());
     }
     
-    // 读取文件的特定行范围
+    // 读取文件的特定行范围（支持Unicode路径）
     static std::string readFileRange(const std::string& path, int startLine, int endLine) {
-        std::ifstream file(path, std::ios::in | std::ios::binary);
+        // 将UTF-8路径转换为宽字符路径
+        std::wstring wPath = utf8ToWide(path);
+        
+        std::wifstream file(wPath.c_str(), std::ios::in | std::ios::binary);
         if (!file.is_open()) {
-            return "Error: 无法打开文件 " + path;
+            return "Error: " + getFileErrorReason(path);
         }
         
-        std::stringstream buffer;
-        std::string line;
+        // 设置文件流的locale以支持UTF-8
+        file.imbue(std::locale(file.getloc(), new std::codecvt_utf8<wchar_t>));
+        
+        std::wstringstream buffer;
+        std::wstring line;
         int currentLine = 0;
         
         while (std::getline(file, line)) {
             currentLine++;
             if (currentLine >= startLine && currentLine <= endLine) {
-                buffer << currentLine << ": " << line << "\n";
+                buffer << currentLine << L": " << line << L"\n";
             }
             if (currentLine > endLine) break;
         }
         
         file.close();
-        return buffer.str();
+        return wideToUtf8(buffer.str());
     }
     
     // 写入文本文件

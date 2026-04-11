@@ -7,6 +7,7 @@
 #include "app_manager.hpp"
 #include "secure_storage.hpp"
 #include "file_manager.hpp"
+#include "update_checker.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <windows.h>
@@ -21,6 +22,8 @@
 using namespace aries;
 
 const std::string LOG_FILE = "aries_agent.log";
+const std::string CURRENT_VERSION = "v1.2";
+const std::string GITHUB_REPO = "https://github.com/yunsjxh/Open-Aries-AI/releases";
 
 std::string getCurrentTime() {
     auto now = std::time(nullptr);
@@ -86,6 +89,57 @@ std::string extractThinkingFromResponse(const std::string& response) {
 void setup_console() {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+}
+
+// 检查更新
+void checkForUpdates() {
+    std::cout << "正在检查更新..." << std::endl;
+    logMessage("正在检查更新...");
+    
+    ReleaseInfo latest = UpdateChecker::checkForUpdate(GITHUB_REPO);
+    
+    if (!latest.success) {
+        std::cout << "检查更新失败: " << latest.errorMessage << std::endl;
+        logMessage("检查更新失败: " + latest.errorMessage);
+        return;
+    }
+    
+    int compareResult = UpdateChecker::compareVersions(latest.version, CURRENT_VERSION);
+    
+    if (compareResult > 0) {
+        // 有新版本
+        std::cout << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << "【发现新版本】" << std::endl;
+        std::cout << "当前版本: " << CURRENT_VERSION << std::endl;
+        std::cout << "最新版本: " << latest.version << std::endl;
+        if (latest.isPrerelease) {
+            std::cout << "注意: 这是预发布版本" << std::endl;
+        }
+        std::cout << "发布时间: " << latest.publishedAt << std::endl;
+        std::cout << "下载地址: " << latest.htmlUrl << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << std::endl;
+        
+        logMessage("发现新版本: " + latest.version);
+        
+        // 显示更新说明（前500字符）
+        if (!latest.body.empty()) {
+            std::cout << "更新说明:" << std::endl;
+            std::string body = latest.body;
+            if (body.length() > 500) {
+                body = body.substr(0, 500) + "...";
+            }
+            std::cout << body << std::endl;
+            std::cout << std::endl;
+        }
+    } else if (compareResult == 0) {
+        std::cout << "当前已是最新版本 (" << CURRENT_VERSION << ")" << std::endl;
+        logMessage("当前已是最新版本: " + CURRENT_VERSION);
+    } else {
+        std::cout << "当前版本 (" << CURRENT_VERSION << ") 比发布版本 (" << latest.version << ") 更新" << std::endl;
+        logMessage("当前版本比发布版本更新");
+    }
 }
 
 bool save_bitmap_to_png(HBITMAP hBitmap, const std::string& filepath) {
@@ -533,6 +587,11 @@ int main(int argc, char* argv[]) {
      /:/  /       |:|  |       \/__/        \:\__\        \::/  /                 /:/  /      \/__/
      \/__/         \|__|                     \/__/         \/__/                  \/__/
 )" << std::endl;
+    std::cout << "  Open-Aries-AI - Windows 智能自动化助手  版本 " << CURRENT_VERSION << std::endl;
+    std::cout << std::endl;
+    
+    // 检查更新
+    checkForUpdates();
     std::cout << std::endl;
     
     // 初始化提供商管理器
@@ -699,6 +758,43 @@ int main(int argc, char* argv[]) {
         manager.setCurrentProvider(providerName);
         provider = manager.getCurrentProvider();
         std::cout << "已切换到: " << providerName << std::endl;
+        
+        // 切换提供商后，重新提示输入任务目标
+        std::cout << std::endl;
+        std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商): ";
+        std::getline(std::cin, user_goal);
+        logMessage("用户输入: " + user_goal);
+        
+        if (user_goal == "quit" || user_goal == "exit") {
+            logMessage("用户退出");
+            return 0;
+        }
+        
+        if (user_goal == "clear") {
+            auto providers = manager.getProviderNames();
+            for (const auto& name : providers) {
+                if (manager.hasSavedApiKey(name)) {
+                    SecureStorage::deleteApiKey(name);
+                }
+            }
+            auto customProviders = SecureStorage::getCustomProviderList();
+            for (const auto& name : customProviders) {
+                SecureStorage::deleteCustomProvider(name);
+            }
+            std::cout << "已清除所有保存的 API Key 和配置" << std::endl;
+            logMessage("已清除所有 API Key 和配置");
+            std::cout << "\n按任意键退出..." << std::endl;
+            _getch();
+            return 0;
+        }
+        
+        if (user_goal == "provider") {
+            std::cout << "已经选择了提供商，请直接输入任务目标" << std::endl;
+            std::cout << std::endl;
+            std::cout << "输入任务目标: ";
+            std::getline(std::cin, user_goal);
+            logMessage("用户输入: " + user_goal);
+        }
     }
 
     std::vector<InstalledApp> installedApps;
@@ -706,13 +802,14 @@ int main(int argc, char* argv[]) {
     bool appsLoaded = false;
     std::string lastExecuteOutput;
 
-    // 动作历史记录（保存最近2次）
+    // 动作历史记录（保存所有历史）
     struct ActionHistory {
         std::string action;
         std::string thinking;
         std::string timestamp;
     };
     std::vector<ActionHistory> actionHistory;
+    const size_t MAX_HISTORY_TO_SHOW = 5;  // 最多显示给AI的历史次数
 
     int max_iterations = 10;
     int iteration = 0;
@@ -753,15 +850,35 @@ int main(int argc, char* argv[]) {
         
         std::string user_message = "任务目标: " + user_goal;
         
-        // 添加动作历史反馈（最近2次）
+        // 添加动作历史反馈（所有历史，但限制显示数量）
         if (!actionHistory.empty()) {
-            user_message += "\n\n【动作历史 - 最近 " + std::to_string(actionHistory.size()) + " 次】";
-            for (size_t i = 0; i < actionHistory.size(); i++) {
+            size_t startIdx = 0;
+            size_t showCount = actionHistory.size();
+            
+            // 如果历史过多，只显示最近的几条
+            if (actionHistory.size() > MAX_HISTORY_TO_SHOW) {
+                startIdx = actionHistory.size() - MAX_HISTORY_TO_SHOW;
+                showCount = MAX_HISTORY_TO_SHOW;
+                user_message += "\n\n【动作历史 - 共 " + std::to_string(actionHistory.size()) + " 次，显示最近 " + std::to_string(showCount) + " 次】";
+            } else {
+                user_message += "\n\n【动作历史 - 共 " + std::to_string(actionHistory.size()) + " 次】";
+            }
+            
+            for (size_t i = startIdx; i < actionHistory.size(); i++) {
                 user_message += "\n\n第 " + std::to_string(i + 1) + " 次:";
                 user_message += "\n执行动作: " + actionHistory[i].action;
                 user_message += "\nAI思考: " + actionHistory[i].thinking;
             }
             user_message += "\n\n注意: 如果上述动作已经连续多次执行但界面没有变化，请尝试不同的动作（如滑动、等待、返回等），避免重复无效操作。";
+        }
+        
+        // 第5次迭代时，提示AI进行总结
+        if (totalSteps == 4) {  // 第5次迭代（从0开始计数）
+            user_message += "\n\n【重要提示】这是第5次迭代。请根据之前的所有操作和获取的信息，进行以下工作：\n";
+            user_message += "1. 总结目前已完成的工作和获取的关键信息\n";
+            user_message += "2. 分析当前进展与任务目标的差距\n";
+            user_message += "3. 制定后续执行计划\n";
+            user_message += "4. 如果信息已足够，可以直接完成任务并给出总结文档\n";
         }
         
         if (!lastExecuteOutput.empty()) {
@@ -808,10 +925,7 @@ int main(int argc, char* argv[]) {
             history.thinking = thinking;
             history.timestamp = getCurrentTime();
             actionHistory.push_back(history);
-            // 只保留最近2次
-            if (actionHistory.size() > 2) {
-                actionHistory.erase(actionHistory.begin());
-            }
+            // 保存所有历史，不再限制数量
 
             if (action.action == "Installed") {
                 std::cout << "正在获取已安装应用列表..." << std::endl;
@@ -922,240 +1036,13 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // 处理文件管理动作
-            ExecutionResult exec_result;
-            bool isFileAction = false;
-            std::string fileResult;
-            
-            if (action.action == "FileList") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : ".";
-                fileResult = FileManager::generateDirectoryDescription(path);
-                std::cout << "\n" << fileResult << std::endl;
-                exec_result = ExecutionResult{true, fileResult};
-            } else if (action.action == "FileRead") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                if (!path.empty()) {
-                    fileResult = FileManager::readTextFile(path);
-                    std::cout << "\n文件内容:\n" << fileResult << std::endl;
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                }
-                exec_result = ExecutionResult{!path.empty(), fileResult};
-            } else if (action.action == "FileHead") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                int lines = 50;
-                if (action.fields.count("lines")) {
-                    try { lines = std::stoi(action.fields.at("lines")); } catch (...) {}
-                }
-                if (!path.empty()) {
-                    fileResult = FileManager::readFileHead(path, lines);
-                    std::cout << "\n文件前 " << lines << " 行:\n" << fileResult << std::endl;
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                }
-                exec_result = ExecutionResult{!path.empty(), fileResult};
-            } else if (action.action == "FileTail") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                int lines = 50;
-                if (action.fields.count("lines")) {
-                    try { lines = std::stoi(action.fields.at("lines")); } catch (...) {}
-                }
-                if (!path.empty()) {
-                    fileResult = FileManager::readFileTail(path, lines);
-                    std::cout << "\n文件后 " << lines << " 行:\n" << fileResult << std::endl;
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                }
-                exec_result = ExecutionResult{!path.empty(), fileResult, ""};
-            } else if (action.action == "FileRange") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                int start = 1, end = 50;
-                if (action.fields.count("start")) {
-                    try { start = std::stoi(action.fields.at("start")); } catch (...) {}
-                }
-                if (action.fields.count("end")) {
-                    try { end = std::stoi(action.fields.at("end")); } catch (...) {}
-                }
-                if (!path.empty()) {
-                    fileResult = FileManager::readFileRange(path, start, end);
-                    std::cout << "\n文件第 " << start << "-" << end << " 行:\n" << fileResult << std::endl;
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                }
-                exec_result = ExecutionResult{!path.empty(), fileResult, ""};
-            } else if (action.action == "FileWrite") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                std::string content = action.fields.count("content") ? action.fields.at("content") : "";
-                if (!path.empty()) {
-                    bool success = FileManager::writeTextFile(path, content, false);
-                    fileResult = success ? "文件写入成功" : "文件写入失败";
-                    std::cout << fileResult << std::endl;
-                    exec_result = ExecutionResult{success, fileResult};
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult};
-                }
-            } else if (action.action == "FileAppend") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                std::string content = action.fields.count("content") ? action.fields.at("content") : "";
-                if (!path.empty()) {
-                    bool success = FileManager::writeTextFile(path, content, true);
-                    fileResult = success ? "文件追加成功" : "文件追加失败";
-                    std::cout << fileResult << std::endl;
-                    exec_result = ExecutionResult{success, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else if (action.action == "FileMkdir") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                if (!path.empty()) {
-                    bool success = FileManager::createDirectory(path);
-                    fileResult = success ? "目录创建成功" : "目录创建失败";
-                    std::cout << fileResult << std::endl;
-                    exec_result = ExecutionResult{success, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定目录路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else if (action.action == "FileDelete") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                if (!path.empty()) {
-                    bool success = FileManager::deleteFile(path);
-                    fileResult = success ? "文件删除成功" : "文件删除失败";
-                    std::cout << fileResult << std::endl;
-                    exec_result = ExecutionResult{success, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else if (action.action == "FileMove") {
-                isFileAction = true;
-                std::string source = action.fields.count("source") ? action.fields.at("source") : "";
-                std::string destination = action.fields.count("destination") ? action.fields.at("destination") : "";
-                if (!source.empty() && !destination.empty()) {
-                    bool success = FileManager::move(source, destination);
-                    fileResult = success ? "文件移动成功" : "文件移动失败";
-                    std::cout << fileResult << std::endl;
-                    exec_result = ExecutionResult{success, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定源路径或目标路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else if (action.action == "FileCopy") {
-                isFileAction = true;
-                std::string source = action.fields.count("source") ? action.fields.at("source") : "";
-                std::string destination = action.fields.count("destination") ? action.fields.at("destination") : "";
-                if (!source.empty() && !destination.empty()) {
-                    bool success = FileManager::copyFile(source, destination, true);
-                    fileResult = success ? "文件复制成功" : "文件复制失败";
-                    std::cout << fileResult << std::endl;
-                    exec_result = ExecutionResult{success, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定源路径或目标路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else if (action.action == "FileInfo") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                if (!path.empty()) {
-                    fileResult = FileManager::getFileSummary(path);
-                    std::cout << "\n" << fileResult << std::endl;
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                }
-                exec_result = ExecutionResult{!path.empty(), fileResult, ""};
-            } else if (action.action == "FileSearch") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : ".";
-                std::string pattern = action.fields.count("pattern") ? action.fields.at("pattern") : "";
-                if (!pattern.empty()) {
-                    auto results = FileManager::searchFiles(path, pattern, true);
-                    std::stringstream ss;
-                    ss << "搜索结果 (" << results.size() << " 个文件):\n";
-                    for (const auto& file : results) {
-                        ss << (file.isDirectory ? "[目录] " : "[文件] ") << file.fullPath << "\n";
-                    }
-                    fileResult = ss.str();
-                    std::cout << "\n" << fileResult << std::endl;
-                    exec_result = ExecutionResult{true, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定搜索模式";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else if (action.action == "FileTree") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : ".";
-                int depth = 3;
-                if (action.fields.count("depth")) {
-                    try { depth = std::stoi(action.fields.at("depth")); } catch (...) {}
-                }
-                fileResult = FileManager::getDirectoryTree(path, depth);
-                std::cout << "\n目录树 (深度 " << depth << "):\n" << fileResult << std::endl;
-                exec_result = ExecutionResult{true, fileResult, ""};
-            } else if (action.action == "FileRun") {
-                isFileAction = true;
-                std::string path = action.fields.count("path") ? action.fields.at("path") : "";
-                if (!path.empty()) {
-                    std::cout << "执行文件: " << path << std::endl;
-                    logMessage("执行文件: " + path);
-                    
-                    // 将UTF-8路径转换为宽字符
-                    std::wstring wPath = AppManager::utf8ToWide(path);
-                    
-                    // 使用 ShellExecuteW 执行文件（支持Unicode路径）
-                    HINSTANCE result = ShellExecuteW(NULL, L"open", wPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
-                    bool success = (reinterpret_cast<INT_PTR>(result) > 32);
-                    
-                    if (success) {
-                        fileResult = "文件执行成功: " + path;
-                        std::cout << fileResult << std::endl;
-                        logMessage(fileResult);
-                    } else {
-                        fileResult = "文件执行失败: " + path + " (错误码: " + std::to_string(reinterpret_cast<INT_PTR>(result)) + ")";
-                        std::cerr << fileResult << std::endl;
-                        logMessage(fileResult);
-                    }
-                    exec_result = ExecutionResult{success, fileResult, ""};
-                } else {
-                    fileResult = "错误: 未指定文件路径";
-                    std::cerr << fileResult << std::endl;
-                    exec_result = ExecutionResult{false, fileResult, ""};
-                }
-            } else {
-                // 非文件管理动作，使用默认执行器
-                exec_result = executor.execute(action);
-            }
+            // 执行动作（统一通过executor处理所有动作类型）
+            ExecutionResult exec_result = executor.execute(action);
             
             logMessage("执行动作: " + action.action + " - " + (exec_result.success ? "成功" : "失败") + " - " + exec_result.message);
             
-            if (action.action == "Execute" && exec_result.success) {
+            if (exec_result.success && !exec_result.message.empty()) {
                 lastExecuteOutput = exec_result.message;
-                std::cout << "\n命令输出:\n" << lastExecuteOutput << std::endl;
-            } else if (isFileAction && exec_result.success) {
-                // 文件操作结果已经在上面输出，这里设置 lastExecuteOutput 供下次迭代使用
-                lastExecuteOutput = fileResult;
             }
             
             Sleep(500);
@@ -1178,8 +1065,12 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
                 
-                std::string repair_prompt = PromptTemplates::buildActionRepairPrompt(action.raw, false);
-                break;
+                // 所有执行错误都直接反馈给AI，不添加额外提示
+                lastExecuteOutput = exec_result.message;
+                std::cout << "执行失败: " << exec_result.message << std::endl;
+                logMessage("执行错误，已反馈给AI: " + exec_result.message);
+                // 继续循环，让AI决定下一步
+                continue;
             }
 
             if (action.action == "finish") {
