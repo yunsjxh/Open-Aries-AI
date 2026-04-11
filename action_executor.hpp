@@ -1,6 +1,8 @@
 #pragma once
 
 #include "action_parser.hpp"
+#include "file_manager.hpp"
+#include "app_manager.hpp"
 #include <windows.h>
 #include <iostream>
 #include <functional>
@@ -10,6 +12,7 @@
 #include <map>
 #include <cctype>
 #include <algorithm>
+#include <conio.h>
 
 namespace aries {
 
@@ -57,6 +60,7 @@ public:
             return ExecutionResult(false, "无效的动作");
         }
 
+        // 鼠标/键盘操作
         if (iequals(action.action, "Tap") || iequals(action.action, "Click")) {
             return executeTap(action);
         } else if (iequals(action.action, "RightClick")) {
@@ -65,18 +69,58 @@ public:
             return executeType(action);
         } else if (iequals(action.action, "Swipe")) {
             return executeSwipe(action);
+        
+        // 导航操作
         } else if (iequals(action.action, "Back")) {
             return executeBack(action);
         } else if (iequals(action.action, "Home")) {
             return executeHome(action);
         } else if (iequals(action.action, "Wait")) {
             return executeWait(action);
+        
+        // 应用管理
         } else if (iequals(action.action, "Installed")) {
             return executeInstalled(action);
         } else if (iequals(action.action, "Launch")) {
             return executeLaunch(action);
         } else if (iequals(action.action, "Execute")) {
             return executeExecute(action);
+        
+        // 文件管理操作
+        } else if (iequals(action.action, "FileList")) {
+            return executeFileList(action);
+        } else if (iequals(action.action, "FileRead")) {
+            return executeFileRead(action);
+        } else if (iequals(action.action, "FileHead")) {
+            return executeFileHead(action);
+        } else if (iequals(action.action, "FileTail")) {
+            return executeFileTail(action);
+        } else if (iequals(action.action, "FileRange")) {
+            return executeFileRange(action);
+        } else if (iequals(action.action, "FileWrite")) {
+            return executeFileWrite(action);
+        } else if (iequals(action.action, "FileAppend")) {
+            return executeFileAppend(action);
+        } else if (iequals(action.action, "FileMkdir")) {
+            return executeFileMkdir(action);
+        } else if (iequals(action.action, "FileDelete")) {
+            return executeFileDelete(action);
+        } else if (iequals(action.action, "FileMove")) {
+            return executeFileMove(action);
+        } else if (iequals(action.action, "FileCopy")) {
+            return executeFileCopy(action);
+        } else if (iequals(action.action, "FileInfo")) {
+            return executeFileInfo(action);
+        } else if (iequals(action.action, "FileSearch")) {
+            return executeFileSearch(action);
+        } else if (iequals(action.action, "FileTree")) {
+            return executeFileTree(action);
+        } else if (iequals(action.action, "FileRun")) {
+            return executeFileRun(action);
+        
+        // 其他操作
+        } else if (iequals(action.action, "Take_over")) {
+            return executeTakeOver(action);
         } else if (iequals(action.action, "finish")) {
             return executeFinish(action);
         } else {
@@ -589,10 +633,310 @@ private:
         }
     }
 
+    // ========== 文件管理操作 ==========
+    
+    ExecutionResult executeFileList(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        if (path.empty()) path = ".";
+        
+        log("执行操作: 列出目录 " + path);
+        
+        std::string result = FileManager::generateDirectoryDescription(path);
+        std::cout << "\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileRead(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        log("执行操作: 读取文件 " + path);
+        
+        std::string result = FileManager::readTextFile(path);
+        // 检查是否返回错误
+        if (result.find("Error:") == 0) {
+            std::cerr << result << std::endl;
+            return ExecutionResult(false, result);
+        }
+        std::cout << "\n文件内容:\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileHead(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        int lines = 50;
+        std::string linesStr = readField(action.fields, {"lines"});
+        if (!linesStr.empty()) {
+            try { lines = std::stoi(linesStr); } catch (...) {}
+        }
+        
+        log("执行操作: 读取文件前 " + std::to_string(lines) + "行 " + path);
+        
+        std::string result = FileManager::readFileHead(path, lines);
+        // 检查是否返回错误
+        if (result.find("Error:") == 0) {
+            std::cerr << result << std::endl;
+            return ExecutionResult(false, result);
+        }
+        std::cout << "\n文件前 " << lines << " 行:\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileTail(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        int lines = 50;
+        std::string linesStr = readField(action.fields, {"lines"});
+        if (!linesStr.empty()) {
+            try { lines = std::stoi(linesStr); } catch (...) {}
+        }
+        
+        log("执行操作: 读取文件后 " + std::to_string(lines) + "行 " + path);
+        
+        std::string result = FileManager::readFileTail(path, lines);
+        // 检查是否返回错误
+        if (result.find("Error:") == 0) {
+            std::cerr << result << std::endl;
+            return ExecutionResult(false, result);
+        }
+        std::cout << "\n文件后 " << lines << " 行:\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileRange(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        int start = 1, end = 50;
+        std::string startStr = readField(action.fields, {"start"});
+        std::string endStr = readField(action.fields, {"end"});
+        if (!startStr.empty()) {
+            try { start = std::stoi(startStr); } catch (...) {}
+        }
+        if (!endStr.empty()) {
+            try { end = std::stoi(endStr); } catch (...) {}
+        }
+        
+        log("执行操作: 读取文件第 " + std::to_string(start) + "-" + std::to_string(end) + "行 " + path);
+        
+        std::string result = FileManager::readFileRange(path, start, end);
+        // 检查是否返回错误
+        if (result.find("Error:") == 0) {
+            std::cerr << result << std::endl;
+            return ExecutionResult(false, result);
+        }
+        std::cout << "\n文件第 " << start << "-" << end << " 行:\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileWrite(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        std::string content = readField(action.fields, {"content"});
+        
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        log("执行操作: 写入文件 " + path);
+        
+        bool success = FileManager::writeTextFile(path, content, false);
+        std::string result = success ? "文件写入成功" : "文件写入失败";
+        std::cout << result << std::endl;
+        return ExecutionResult(success, result);
+    }
+    
+    ExecutionResult executeFileAppend(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        std::string content = readField(action.fields, {"content"});
+        
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        log("执行操作: 追加到文件 " + path);
+        
+        bool success = FileManager::writeTextFile(path, content, true);
+        std::string result = success ? "文件追加成功" : "文件追加失败";
+        std::cout << result << std::endl;
+        return ExecutionResult(success, result);
+    }
+    
+    ExecutionResult executeFileMkdir(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定目录路径");
+        }
+        
+        log("执行操作: 创建目录 " + path);
+        
+        bool success = FileManager::createDirectory(path);
+        std::string result = success ? "目录创建成功" : "目录创建失败";
+        std::cout << result << std::endl;
+        return ExecutionResult(success, result);
+    }
+    
+    ExecutionResult executeFileDelete(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        log("执行操作: 删除文件/目录 " + path);
+        
+        bool success = FileManager::deleteFile(path);
+        std::string result = success ? "删除成功" : "删除失败";
+        std::cout << result << std::endl;
+        return ExecutionResult(success, result);
+    }
+    
+    ExecutionResult executeFileMove(const ParsedAgentAction& action) {
+        std::string source = readField(action.fields, {"source", "src"});
+        std::string destination = readField(action.fields, {"destination", "dest", "dst"});
+        
+        if (source.empty() || destination.empty()) {
+            return ExecutionResult(false, "错误: 未指定源路径或目标路径");
+        }
+        
+        log("执行操作: 移动 " + source + " -> " + destination);
+        
+        bool success = FileManager::move(source, destination);
+        std::string result = success ? "移动成功" : "移动失败";
+        std::cout << result << std::endl;
+        return ExecutionResult(success, result);
+    }
+    
+    ExecutionResult executeFileCopy(const ParsedAgentAction& action) {
+        std::string source = readField(action.fields, {"source", "src"});
+        std::string destination = readField(action.fields, {"destination", "dest", "dst"});
+        
+        if (source.empty() || destination.empty()) {
+            return ExecutionResult(false, "错误: 未指定源路径或目标路径");
+        }
+        
+        log("执行操作: 复制 " + source + " -> " + destination);
+        
+        bool success = FileManager::copyFile(source, destination, true);
+        std::string result = success ? "复制成功" : "复制失败";
+        std::cout << result << std::endl;
+        return ExecutionResult(success, result);
+    }
+    
+    ExecutionResult executeFileInfo(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        log("执行操作: 获取文件信息 " + path);
+        
+        std::string result = FileManager::getFileSummary(path);
+        std::cout << "\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileSearch(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        std::string pattern = readField(action.fields, {"pattern"});
+        
+        if (path.empty()) path = ".";
+        if (pattern.empty()) {
+            return ExecutionResult(false, "错误: 未指定搜索模式");
+        }
+        
+        log("执行操作: 在 " + path + " 中搜索 " + pattern);
+        
+        auto results = FileManager::searchFiles(path, pattern, true);
+        std::stringstream ss;
+        ss << "搜索结果 (" << results.size() << " 个文件):\n";
+        for (const auto& file : results) {
+            ss << (file.isDirectory ? "[目录] " : "[文件] ") << file.fullPath << "\n";
+        }
+        std::string result = ss.str();
+        std::cout << "\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileTree(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        
+        if (path.empty()) path = ".";
+        
+        int depth = 3;
+        std::string depthStr = readField(action.fields, {"depth"});
+        if (!depthStr.empty()) {
+            try { depth = std::stoi(depthStr); } catch (...) {}
+        }
+        
+        log("执行操作: 获取目录树 " + path + " (深度 " + std::to_string(depth) + ")");
+        
+        std::string result = FileManager::getDirectoryTree(path, depth);
+        std::cout << "\n目录树 (深度 " << depth << "):\n" << result << std::endl;
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeFileRun(const ParsedAgentAction& action) {
+        std::string path = readField(action.fields, {"path"});
+        
+        if (path.empty()) {
+            return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        log("执行操作: 执行文件 " + path);
+        
+        // 将UTF-8路径转换为宽字符
+        std::wstring wPath = AppManager::utf8ToWide(path);
+        
+        // 使用 ShellExecuteW 执行文件（支持Unicode路径）
+        HINSTANCE result = ShellExecuteW(NULL, L"open", wPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        bool success = (reinterpret_cast<INT_PTR>(result) > 32);
+        
+        if (success) {
+            std::string msg = "文件执行成功: " + path;
+            std::cout << msg << std::endl;
+            return ExecutionResult(true, msg);
+        } else {
+            std::string msg = "文件执行失败: " + path + " (错误码: " + std::to_string(reinterpret_cast<INT_PTR>(result)) + ")";
+            std::cerr << msg << std::endl;
+            return ExecutionResult(false, msg);
+        }
+    }
+    
+    ExecutionResult executeTakeOver(const ParsedAgentAction& action) {
+        std::string message = readField(action.fields, {"message"});
+        if (message.empty()) {
+            message = "需要用户接管";
+        }
+        
+        log("执行操作: 请求用户接管 - " + message);
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "【用户接管请求】" << std::endl;
+        std::cout << message << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << "按任意键继续..." << std::endl;
+        _getch();
+        
+        return ExecutionResult(true, "用户已接管");
+    }
+
     // 模拟鼠标点击
     bool simulateMouseClick(int x, int y) {
-        // 移动鼠标
+        // 移动鼠标到指定位置
         SetCursorPos(x, y);
+        Sleep(50);
         
         // 左键按下
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
