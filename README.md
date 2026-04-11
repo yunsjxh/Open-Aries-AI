@@ -275,3 +275,4 @@ MIT License
 
 - [智谱 AI](https://open.bigmodel.cn/) - 提供大模型服务
 - [OpenAI](https://openai.com/) - OpenAI 兼容 API 标准
+- [Aries AI](https://github.com/ZG0704666/Aries-AI) - 本软件参考了该项目的设计思路和实现方案
