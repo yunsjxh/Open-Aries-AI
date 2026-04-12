@@ -6,6 +6,7 @@
 #include "action_executor.hpp"
 #include "app_manager.hpp"
 #include "secure_storage.hpp"
+#include "security_config.hpp"
 #include "file_manager.hpp"
 #include "update_checker.hpp"
 #include <iostream>
@@ -717,12 +718,24 @@ int main(int argc, char* argv[]) {
     config.screenWidth = screenWidth;
     config.screenHeight = screenHeight;
     
+    SecurityConfig loadedSecurityConfig = SecurityConfigLoader::loadFromFileAndEnv();
+
     std::cout << "\n=== 安全能力开关（默认关闭高危能力）===" << std::endl;
-    config.allowExecute = promptYesNo("是否开启 Execute（PowerShell/命令执行）能力？", false);
-    config.allowFileWrite = promptYesNo("是否开启 FileWrite/FileAppend（文件写入）能力？", false);
-    config.allowFileDelete = promptYesNo("是否开启 FileDelete（文件删除）能力？", false);
-    config.allowFileRun = promptYesNo("是否开启 FileRun（执行本地文件）能力？", false);
-    config.requireHighRiskConfirmation = true;
+    if (loadedSecurityConfig.loadedFromFile) {
+        std::cout << "检测到 aries_config.json，已加载安全配置（环境变量可覆盖）。" << std::endl;
+        config.allowExecute = loadedSecurityConfig.allowExecute;
+        config.allowFileWrite = loadedSecurityConfig.allowFileWrite;
+        config.allowFileDelete = loadedSecurityConfig.allowFileDelete;
+        config.allowFileRun = loadedSecurityConfig.allowFileRun;
+        config.requireHighRiskConfirmation = loadedSecurityConfig.requireHighRiskConfirmation;
+    } else {
+        std::cout << "未检测到 aries_config.json，进入交互式安全配置。" << std::endl;
+        config.allowExecute = promptYesNo("是否开启 Execute（PowerShell/命令执行）能力？", false);
+        config.allowFileWrite = promptYesNo("是否开启 FileWrite/FileAppend（文件写入）能力？", false);
+        config.allowFileDelete = promptYesNo("是否开启 FileDelete（文件删除）能力？", false);
+        config.allowFileRun = promptYesNo("是否开启 FileRun（执行本地文件）能力？", false);
+        config.requireHighRiskConfirmation = true;
+    }
     
     std::cout << "安全配置已应用：" << std::endl;
     std::cout << "  Execute: " << (config.allowExecute ? "开启" : "关闭") << std::endl;
