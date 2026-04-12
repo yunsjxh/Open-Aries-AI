@@ -195,6 +195,13 @@ Open-Aries-AI/
 
 ## 🔧 编译指南
 
+### CMake 构建
+
+```bash
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build --config Release
+```
+
 ### 使用 MinGW-w64
 
 ```bash

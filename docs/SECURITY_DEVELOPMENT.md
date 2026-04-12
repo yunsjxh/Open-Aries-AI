@@ -44,6 +44,22 @@ API Key 与自定义 Provider 配置已改为优先使用 Windows DPAPI：
 
 ---
 
+### 5) 配置文件 + 环境变量覆盖（补齐“剩下的”）
+
+新增 `security_config.hpp`，实现：
+
+- 从 `aries_config.json` 读取安全开关；
+- 支持环境变量覆盖（用于 CI/部署场景）；
+- 未找到配置文件时自动回退为交互式提问，保证向后兼容。
+
+支持环境变量：
+
+- `ARIES_ALLOW_EXECUTE`
+- `ARIES_ALLOW_FILE_WRITE`
+- `ARIES_ALLOW_FILE_DELETE`
+- `ARIES_ALLOW_FILE_RUN`
+- `ARIES_REQUIRE_HIGH_RISK_CONFIRMATION`
+
 ## 兼容性说明
 
 1. **密钥数据兼容**：
