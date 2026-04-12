@@ -5,6 +5,7 @@
 #include <regex>
 #include <algorithm>
 #include <optional>
+#include <set>
 
 namespace aries {
 
@@ -209,15 +210,20 @@ private:
 
     ParsedAgentAction parseActionFromString(const std::string& actionStr) {
         std::string trimmed = trim(actionStr);
+        if (trimmed.empty()) {
+            return ParsedAgentAction("", std::nullopt, {}, trimmed);
+        }
         
         // 检测 finish 动作
         if (trimmed.find("finish(") != std::string::npos) {
-            return parseFinishAction(trimmed);
+            auto parsed = parseFinishAction(trimmed);
+            return validateAgainstSchema(parsed);
         }
         
         // 检测 do 动作
         if (trimmed.find("do(") != std::string::npos) {
-            return parseDoAction(trimmed);
+            auto parsed = parseDoAction(trimmed);
+            return validateAgainstSchema(parsed);
         }
 
         return ParsedAgentAction("unknown", std::nullopt, {}, trimmed);
@@ -320,6 +326,52 @@ private:
         }
 
         return fields;
+    }
+    
+    ParsedAgentAction validateAgainstSchema(const ParsedAgentAction& action) {
+        static const std::map<std::string, std::set<std::string>> requiredFields = {
+            {"Tap", {"element"}},
+            {"Click", {"element"}},
+            {"RightClick", {"element"}},
+            {"Type", {"text"}},
+            {"Swipe", {"start", "end"}},
+            {"Wait", {"duration"}},
+            {"Launch", {"app"}},
+            {"Execute", {"command"}},
+            {"FileList", {"path"}},
+            {"FileRead", {"path"}},
+            {"FileHead", {"path"}},
+            {"FileTail", {"path"}},
+            {"FileRange", {"path", "start", "end"}},
+            {"FileWrite", {"path", "content"}},
+            {"FileAppend", {"path", "content"}},
+            {"FileMkdir", {"path"}},
+            {"FileDelete", {"path"}},
+            {"FileMove", {"source", "destination"}},
+            {"FileCopy", {"source", "destination"}},
+            {"FileInfo", {"path"}},
+            {"FileSearch", {"path", "pattern"}},
+            {"FileTree", {"path", "depth"}},
+            {"FileRun", {"path"}}
+        };
+        
+        if (action.action.empty() || action.action == "unknown" || action.action == "finish") {
+            return action;
+        }
+        
+        auto schemaIt = requiredFields.find(action.action);
+        if (schemaIt == requiredFields.end()) {
+            return ParsedAgentAction("", std::nullopt, {}, "Schema验证失败: 未知动作 " + action.action);
+        }
+        
+        for (const auto& field : schemaIt->second) {
+            auto it = action.fields.find(field);
+            if (it == action.fields.end() || trim(it->second).empty()) {
+                return ParsedAgentAction("", std::nullopt, {}, "Schema验证失败: 动作 " + action.action + " 缺少字段 " + field);
+            }
+        }
+        
+        return action;
     }
 };
 
