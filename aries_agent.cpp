@@ -6,6 +6,7 @@
 #include "action_executor.hpp"
 #include "app_manager.hpp"
 #include "secure_storage.hpp"
+#include "security_config.hpp"
 #include "file_manager.hpp"
 #include "update_checker.hpp"
 #include <iostream>
@@ -17,6 +18,7 @@
 #include <ctime>
 #include <iomanip>
 #include <algorithm>
+#include <cctype>
 #pragma comment(lib, "gdiplus.lib")
 
 using namespace aries;
@@ -89,6 +91,15 @@ std::string extractThinkingFromResponse(const std::string& response) {
 void setup_console() {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+}
+
+bool promptYesNo(const std::string& question, bool defaultValue = false) {
+    std::cout << question << (defaultValue ? " (Y/n): " : " (y/N): ");
+    std::string input;
+    std::getline(std::cin, input);
+    if (input.empty()) return defaultValue;
+    char c = static_cast<char>(std::tolower(input[0]));
+    return c == 'y';
 }
 
 // 检查更新
@@ -706,6 +717,34 @@ int main(int argc, char* argv[]) {
     ActionExecutor::Config config;
     config.screenWidth = screenWidth;
     config.screenHeight = screenHeight;
+    
+    SecurityConfig loadedSecurityConfig = SecurityConfigLoader::loadFromFileAndEnv();
+
+    std::cout << "\n=== 安全能力开关（默认关闭高危能力）===" << std::endl;
+    if (loadedSecurityConfig.loadedFromFile) {
+        std::cout << "检测到 aries_config.json，已加载安全配置（环境变量可覆盖）。" << std::endl;
+        config.allowExecute = loadedSecurityConfig.allowExecute;
+        config.allowFileWrite = loadedSecurityConfig.allowFileWrite;
+        config.allowFileDelete = loadedSecurityConfig.allowFileDelete;
+        config.allowFileRun = loadedSecurityConfig.allowFileRun;
+        config.requireHighRiskConfirmation = loadedSecurityConfig.requireHighRiskConfirmation;
+    } else {
+        std::cout << "未检测到 aries_config.json，进入交互式安全配置。" << std::endl;
+        config.allowExecute = promptYesNo("是否开启 Execute（PowerShell/命令执行）能力？", false);
+        config.allowFileWrite = promptYesNo("是否开启 FileWrite/FileAppend（文件写入）能力？", false);
+        config.allowFileDelete = promptYesNo("是否开启 FileDelete（文件删除）能力？", false);
+        config.allowFileRun = promptYesNo("是否开启 FileRun（执行本地文件）能力？", false);
+        config.requireHighRiskConfirmation = true;
+    }
+    
+    std::cout << "安全配置已应用：" << std::endl;
+    std::cout << "  Execute: " << (config.allowExecute ? "开启" : "关闭") << std::endl;
+    std::cout << "  FileWrite/FileAppend: " << (config.allowFileWrite ? "开启" : "关闭") << std::endl;
+    std::cout << "  FileDelete: " << (config.allowFileDelete ? "开启" : "关闭") << std::endl;
+    std::cout << "  FileRun: " << (config.allowFileRun ? "开启" : "关闭") << std::endl;
+    std::cout << "  高危动作二次确认: 开启" << std::endl;
+    logMessage("安全能力开关已初始化");
+    
     ActionExecutor executor(config);
     
     executor.setLogCallback([](const std::string& msg) {
