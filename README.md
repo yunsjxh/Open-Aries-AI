@@ -147,6 +147,12 @@ aries_agent.exe
 
 ## ⚙️ 配置说明
 
+### 安全能力开关（新增）
+
+程序启动后会提示是否开启高危能力，默认全部关闭：`Execute`、`FileWrite/FileAppend`、`FileDelete`、`FileRun`。  
+且高危动作会进行二次确认（输入 `y` 才执行）。  
+详细开发说明请见：`docs/SECURITY_DEVELOPMENT.md`。
+
 ### 智谱 AI (默认)
 
 - **Base URL**: `https://open.bigmodel.cn/api/paas/v4`
@@ -188,6 +194,13 @@ Open-Aries-AI/
 ```
 
 ## 🔧 编译指南
+
+### CMake 构建
+
+```bash
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build --config Release
+```
 
 ### 使用 MinGW-w64
 

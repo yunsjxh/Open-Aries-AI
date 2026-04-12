@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <intrin.h>
 #include <map>
+#include <wincrypt.h>
 
 namespace aries {
 
@@ -17,25 +18,18 @@ class SecureStorage {
 public:
     // 保存加密的 API Key (支持多提供商)
     static bool saveApiKey(const std::string& apiKey, const std::string& provider = "default") {
-        std::string hardwareId = getHardwareFingerprint();
-        if (hardwareId.empty()) {
+        std::string encryptedDpapi = protectWithDPAPI(apiKey);
+        if (encryptedDpapi.empty()) {
             return false;
         }
-        
-        std::string salt = generateSalt();
-        std::string key = hardwareId + salt;
-        std::string hashedKey = hashString(key);
-        std::string encrypted = xorEncrypt(apiKey, hashedKey);
-        std::string hexEncrypted = stringToHex(encrypted);
-        std::string obfuscated = obfuscateWithRandomChars(hexEncrypted);
         
         std::ofstream file(getStoragePath(provider), std::ios::out);
         if (!file.is_open()) {
             return false;
         }
         
-        file << salt << std::endl;
-        file << obfuscated << std::endl;
+        file << "DPAPI_V1" << std::endl;
+        file << encryptedDpapi << std::endl;
         file.close();
         
         return true;
@@ -58,7 +52,13 @@ public:
         if (salt.empty() || obfuscated.empty()) {
             return "";
         }
-        
+
+        // 新格式：DPAPI
+        if (salt == "DPAPI_V1") {
+            return unprotectWithDPAPI(obfuscated);
+        }
+
+        // 旧格式兼容：硬件指纹 + XOR + 混淆
         std::string hardwareId = getHardwareFingerprint();
         if (hardwareId.empty()) {
             return "";
@@ -72,9 +72,7 @@ public:
             return "";
         }
         
-        std::string decrypted = xorEncrypt(encrypted, hashedKey);
-        
-        return decrypted;
+        return xorEncrypt(encrypted, hashedKey);
     }
     
     // 检查是否已保存 API Key (支持多提供商)
@@ -97,28 +95,20 @@ public:
     // 格式: baseUrl|modelName|apiKey
     static bool saveCustomProvider(const std::string& name, const std::string& baseUrl, 
                                     const std::string& modelName, const std::string& apiKey) {
-        std::string hardwareId = getHardwareFingerprint();
-        if (hardwareId.empty()) {
-            return false;
-        }
-        
-        std::string salt = generateSalt();
-        std::string key = hardwareId + salt;
-        std::string hashedKey = hashString(key);
-        
         // 格式: baseUrl|modelName|apiKey
         std::string data = baseUrl + "|" + modelName + "|" + apiKey;
-        std::string encrypted = xorEncrypt(data, hashedKey);
-        std::string hexEncrypted = stringToHex(encrypted);
-        std::string obfuscated = obfuscateWithRandomChars(hexEncrypted);
+        std::string encryptedDpapi = protectWithDPAPI(data);
+        if (encryptedDpapi.empty()) {
+            return false;
+        }
         
         std::ofstream file(getCustomProviderPath(name), std::ios::out);
         if (!file.is_open()) {
             return false;
         }
         
-        file << salt << std::endl;
-        file << obfuscated << std::endl;
+        file << "DPAPI_V1" << std::endl;
+        file << encryptedDpapi << std::endl;
         file.close();
         
         // 同时更新自定义提供商列表
@@ -146,20 +136,29 @@ public:
             return {"", "", ""};
         }
         
-        std::string hardwareId = getHardwareFingerprint();
-        if (hardwareId.empty()) {
-            return {"", "", ""};
+        std::string decrypted;
+        if (salt == "DPAPI_V1") {
+            decrypted = unprotectWithDPAPI(obfuscated);
+        } else {
+            // 旧格式兼容：硬件指纹 + XOR + 混淆
+            std::string hardwareId = getHardwareFingerprint();
+            if (hardwareId.empty()) {
+                return {"", "", ""};
+            }
+            
+            std::string key = hardwareId + salt;
+            std::string hashedKey = hashString(key);
+            std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
+            std::string encrypted = hexToString(hexEncrypted);
+            if (encrypted.empty()) {
+                return {"", "", ""};
+            }
+            decrypted = xorEncrypt(encrypted, hashedKey);
         }
         
-        std::string key = hardwareId + salt;
-        std::string hashedKey = hashString(key);
-        std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
-        std::string encrypted = hexToString(hexEncrypted);
-        if (encrypted.empty()) {
+        if (decrypted.empty()) {
             return {"", "", ""};
         }
-        
-        std::string decrypted = xorEncrypt(encrypted, hashedKey);
         
         // 解析 baseUrl|modelName|apiKey
         std::vector<std::string> parts;
@@ -518,6 +517,48 @@ private:
         }
         
         return output;
+    }
+    
+    // 使用 Windows DPAPI 加密
+    static std::string protectWithDPAPI(const std::string& plainText) {
+        DATA_BLOB inBlob;
+        inBlob.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plainText.data()));
+        inBlob.cbData = static_cast<DWORD>(plainText.size());
+        
+        DATA_BLOB outBlob;
+        ZeroMemory(&outBlob, sizeof(outBlob));
+        
+        if (!CryptProtectData(&inBlob, L"Open-Aries-AI", NULL, NULL, NULL, 0, &outBlob)) {
+            return "";
+        }
+        
+        std::string encrypted(reinterpret_cast<char*>(outBlob.pbData), outBlob.cbData);
+        std::string hex = stringToHex(encrypted);
+        LocalFree(outBlob.pbData);
+        return hex;
+    }
+    
+    // 使用 Windows DPAPI 解密
+    static std::string unprotectWithDPAPI(const std::string& hexCipherText) {
+        std::string encrypted = hexToString(hexCipherText);
+        if (encrypted.empty()) {
+            return "";
+        }
+        
+        DATA_BLOB inBlob;
+        inBlob.pbData = reinterpret_cast<BYTE*>(encrypted.data());
+        inBlob.cbData = static_cast<DWORD>(encrypted.size());
+        
+        DATA_BLOB outBlob;
+        ZeroMemory(&outBlob, sizeof(outBlob));
+        
+        if (!CryptUnprotectData(&inBlob, NULL, NULL, NULL, NULL, 0, &outBlob)) {
+            return "";
+        }
+        
+        std::string plain(reinterpret_cast<char*>(outBlob.pbData), outBlob.cbData);
+        LocalFree(outBlob.pbData);
+        return plain;
     }
 };
 
