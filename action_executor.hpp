@@ -13,6 +13,8 @@
 #include <cctype>
 #include <algorithm>
 #include <conio.h>
+#include <set>
+#include <limits>
 
 namespace aries {
 
@@ -29,6 +31,7 @@ struct ExecutionResult {
 };
 
 using LogCallback = std::function<void(const std::string&)>;
+using ConfirmationCallback = std::function<bool(const std::string&)>;
 
 class ActionExecutor {
 public:
@@ -37,14 +40,31 @@ public:
         int screenHeight;
         int tapAwaitWindowTimeoutMs;
         std::vector<std::string> sensitiveKeywords;
+        bool allowExecute;
+        bool allowFileWrite;
+        bool allowFileDelete;
+        bool allowFileRun;
+        bool requireHighRiskConfirmation;
         
-        Config() : screenWidth(1920), screenHeight(1080), tapAwaitWindowTimeoutMs(500) {}
+        Config()
+            : screenWidth(1920),
+              screenHeight(1080),
+              tapAwaitWindowTimeoutMs(500),
+              allowExecute(false),
+              allowFileWrite(false),
+              allowFileDelete(false),
+              allowFileRun(false),
+              requireHighRiskConfirmation(true) {}
     };
 
     ActionExecutor(const Config& config = Config()) : config_(config) {}
 
     void setLogCallback(LogCallback callback) {
         logCallback_ = callback;
+    }
+    
+    void setConfirmationCallback(ConfirmationCallback callback) {
+        confirmationCallback_ = callback;
     }
 
     static bool iequals(const std::string& a, const std::string& b) {
@@ -131,12 +151,48 @@ public:
 private:
     Config config_;
     LogCallback logCallback_;
+    ConfirmationCallback confirmationCallback_;
 
     void log(const std::string& message) {
         if (logCallback_) {
             logCallback_(message);
         }
         std::cout << message << std::endl;
+    }
+    
+    bool isHighRiskAction(const std::string& actionName) const {
+        static const std::set<std::string> highRiskActions = {
+            "execute", "filewrite", "fileappend", "filedelete", "filerun"
+        };
+        
+        std::string lower = actionName;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return highRiskActions.find(lower) != highRiskActions.end();
+    }
+    
+    bool confirmHighRiskAction(const ParsedAgentAction& action, const std::string& details) {
+        if (!config_.requireHighRiskConfirmation || !isHighRiskAction(action.action)) {
+            return true;
+        }
+        
+        std::string prompt = "即将执行高危动作: " + action.action;
+        if (!details.empty()) {
+            prompt += "\n详情: " + details;
+        }
+        
+        if (confirmationCallback_) {
+            return confirmationCallback_(prompt);
+        }
+        
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "【高危动作确认】" << std::endl;
+        std::cout << prompt << std::endl;
+        std::cout << "是否继续? (y/n): ";
+        char choice = 'n';
+        std::cin >> choice;
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cout << "========================================\n" << std::endl;
+        return choice == 'y' || choice == 'Y';
     }
 
     // 命令安全检查：验证命令是否包含危险操作
@@ -575,9 +631,17 @@ private:
 
     // 执行 PowerShell 命令并捕获输出
     ExecutionResult executeExecute(const ParsedAgentAction& action) {
+        if (!config_.allowExecute) {
+            return ExecutionResult(false, "安全限制: Execute 能力默认关闭，请在配置中显式开启");
+        }
+        
         std::string command = readField(action.fields, {"command", "cmd"});
         if (command.empty()) {
             return ExecutionResult(false, "命令为空");
+        }
+        
+        if (!confirmHighRiskAction(action, command)) {
+            return ExecutionResult(false, "用户拒绝执行高危动作: Execute");
         }
 
         log("执行操作: 执行命令 \"" + command + "\"");
@@ -741,11 +805,19 @@ private:
     }
     
     ExecutionResult executeFileWrite(const ParsedAgentAction& action) {
+        if (!config_.allowFileWrite) {
+            return ExecutionResult(false, "安全限制: FileWrite 能力默认关闭，请在配置中显式开启");
+        }
+        
         std::string path = readField(action.fields, {"path"});
         std::string content = readField(action.fields, {"content"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        if (!confirmHighRiskAction(action, "path=" + path)) {
+            return ExecutionResult(false, "用户拒绝执行高危动作: FileWrite");
         }
         
         log("执行操作: 写入文件 " + path);
@@ -757,11 +829,19 @@ private:
     }
     
     ExecutionResult executeFileAppend(const ParsedAgentAction& action) {
+        if (!config_.allowFileWrite) {
+            return ExecutionResult(false, "安全限制: FileAppend 能力默认关闭，请在配置中显式开启");
+        }
+        
         std::string path = readField(action.fields, {"path"});
         std::string content = readField(action.fields, {"content"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        if (!confirmHighRiskAction(action, "path=" + path)) {
+            return ExecutionResult(false, "用户拒绝执行高危动作: FileAppend");
         }
         
         log("执行操作: 追加到文件 " + path);
@@ -788,10 +868,18 @@ private:
     }
     
     ExecutionResult executeFileDelete(const ParsedAgentAction& action) {
+        if (!config_.allowFileDelete) {
+            return ExecutionResult(false, "安全限制: FileDelete 能力默认关闭，请在配置中显式开启");
+        }
+        
         std::string path = readField(action.fields, {"path"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        if (!confirmHighRiskAction(action, "path=" + path)) {
+            return ExecutionResult(false, "用户拒绝执行高危动作: FileDelete");
         }
         
         log("执行操作: 删除文件/目录 " + path);
@@ -889,10 +977,18 @@ private:
     }
     
     ExecutionResult executeFileRun(const ParsedAgentAction& action) {
+        if (!config_.allowFileRun) {
+            return ExecutionResult(false, "安全限制: FileRun 能力默认关闭，请在配置中显式开启");
+        }
+        
         std::string path = readField(action.fields, {"path"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
+        }
+        
+        if (!confirmHighRiskAction(action, "path=" + path)) {
+            return ExecutionResult(false, "用户拒绝执行高危动作: FileRun");
         }
         
         log("执行操作: 执行文件 " + path);
