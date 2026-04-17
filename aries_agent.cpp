@@ -6,9 +6,9 @@
 #include "action_executor.hpp"
 #include "app_manager.hpp"
 #include "secure_storage.hpp"
-#include "security_config.hpp"
 #include "file_manager.hpp"
 #include "update_checker.hpp"
+#include "ui_automation.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <windows.h>
@@ -18,13 +18,12 @@
 #include <ctime>
 #include <iomanip>
 #include <algorithm>
-#include <cctype>
 #pragma comment(lib, "gdiplus.lib")
 
 using namespace aries;
 
 const std::string LOG_FILE = "aries_agent.log";
-const std::string CURRENT_VERSION = "v1.2";
+const std::string CURRENT_VERSION = "v1.2.1";
 const std::string GITHUB_REPO = "https://github.com/yunsjxh/Open-Aries-AI/releases";
 
 std::string getCurrentTime() {
@@ -93,17 +92,8 @@ void setup_console() {
     SetConsoleCP(CP_UTF8);
 }
 
-bool promptYesNo(const std::string& question, bool defaultValue = false) {
-    std::cout << question << (defaultValue ? " (Y/n): " : " (y/N): ");
-    std::string input;
-    std::getline(std::cin, input);
-    if (input.empty()) return defaultValue;
-    char c = static_cast<char>(std::tolower(input[0]));
-    return c == 'y';
-}
-
 // 检查更新
-void checkForUpdates() {
+void checkForUpdates(bool autoUpdate = false) {
     std::cout << "正在检查更新..." << std::endl;
     logMessage("正在检查更新...");
     
@@ -144,6 +134,43 @@ void checkForUpdates() {
             std::cout << body << std::endl;
             std::cout << std::endl;
         }
+        
+        // 询问是否自动更新
+        if (!autoUpdate) {
+            std::cout << "是否自动下载并安装更新? (y/n): ";
+            char choice;
+            std::cin >> choice;
+            std::cin.ignore();
+            
+            if (choice == 'y' || choice == 'Y') {
+                autoUpdate = true;
+            }
+        }
+        
+        if (autoUpdate) {
+            std::cout << std::endl;
+            std::cout << "开始自动更新..." << std::endl;
+            logMessage("开始自动更新...");
+            
+            // 获取当前exe路径
+            char exePath[MAX_PATH];
+            GetModuleFileNameA(NULL, exePath, MAX_PATH);
+            
+            // 执行更新
+            if (UpdateChecker::performUpdate(GITHUB_REPO, exePath)) {
+                std::cout << "更新程序已启动，本程序将退出..." << std::endl;
+                logMessage("更新程序已启动");
+                
+                // 等待一下让用户看到消息
+                Sleep(2000);
+                
+                // 退出程序，让更新脚本完成替换
+                exit(0);
+            } else {
+                std::cerr << "自动更新失败" << std::endl;
+                logMessage("自动更新失败");
+            }
+        }
     } else if (compareResult == 0) {
         std::cout << "当前已是最新版本 (" << CURRENT_VERSION << ")" << std::endl;
         logMessage("当前已是最新版本: " + CURRENT_VERSION);
@@ -161,26 +188,35 @@ bool save_bitmap_to_png(HBITMAP hBitmap, const std::string& filepath) {
     bool result = false;
     {
         Gdiplus::Bitmap bitmap(hBitmap, NULL);
-        CLSID pngClsid;
+        CLSID pngClsid = {0};  // 初始化为零
+        bool foundEncoder = false;
         
         UINT numEncoders = 0;
         UINT size = 0;
         Gdiplus::GetImageEncodersSize(&numEncoders, &size);
         if (size > 0) {
             Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)malloc(size);
-            Gdiplus::GetImageEncoders(numEncoders, size, pImageCodecInfo);
-            
-            for (UINT i = 0; i < numEncoders; i++) {
-                if (wcscmp(pImageCodecInfo[i].MimeType, L"image/png") == 0) {
-                    pngClsid = pImageCodecInfo[i].Clsid;
-                    break;
+            if (pImageCodecInfo) {
+                Gdiplus::GetImageEncoders(numEncoders, size, pImageCodecInfo);
+                
+                for (UINT i = 0; i < numEncoders; i++) {
+                    if (wcscmp(pImageCodecInfo[i].MimeType, L"image/png") == 0) {
+                        pngClsid = pImageCodecInfo[i].Clsid;
+                        foundEncoder = true;
+                        break;
+                    }
                 }
+                free(pImageCodecInfo);
             }
-            free(pImageCodecInfo);
         }
         
-        std::wstring wfilepath(filepath.begin(), filepath.end());
-        result = (bitmap.Save(wfilepath.c_str(), &pngClsid, NULL) == Gdiplus::Ok);
+        // 只有在找到编码器后才保存
+        if (foundEncoder) {
+            std::wstring wfilepath(filepath.begin(), filepath.end());
+            result = (bitmap.Save(wfilepath.c_str(), &pngClsid, NULL) == Gdiplus::Ok);
+        } else {
+            logMessage("错误: 未找到PNG编码器");
+        }
     }
     
     Gdiplus::GdiplusShutdown(gdiplusToken);
@@ -209,41 +245,185 @@ bool capture_screen(const std::string& filepath) {
     return result;
 }
 
-// 显示提供商选择菜单
-std::string selectProvider(ProviderManager& manager) {
+// 获取控件列表转述（用于纯文本模型）
+std::string getControlListDescription() {
+    UIAutomationTool uiaTool;
+    if (!uiaTool.initialize()) {
+        return "Error: UI Automation 初始化失败";
+    }
+    
+    std::ostringstream oss;
+    oss << "=== 当前屏幕控件列表 ===\n\n";
+    
+    // 获取活动窗口控件树
+    std::string activeTree = uiaTool.getActiveWindowControlTree(2);
+    if (activeTree.find("Error:") != std::string::npos) {
+        // 如果没有活动窗口，获取桌面上的所有窗口
+        oss << "【顶层窗口列表】\n";
+        oss << uiaTool.listTopLevelWindows();
+    } else {
+        oss << "【活动窗口控件树】\n";
+        oss << activeTree;
+    }
+    
+    return oss.str();
+}
+
+// 使用视觉模型转述屏幕内容
+std::string getVisualDescription(AIProviderPtr visionProvider, const std::string& screenshot_path) {
+    if (!visionProvider) {
+        return "Error: 视觉模型未配置";
+    }
+    
+    std::string system_prompt = R"(# 屏幕内容描述助手
+
+你是一个屏幕内容描述助手。请详细描述当前屏幕显示的内容。
+
+要求：
+1. 描述当前活动的窗口和其主要内容
+2. 列出所有可见的控件（按钮、输入框、菜单等）及其位置
+3. 描述当前界面状态（是否有弹窗、加载状态等）
+4. 使用中文描述
+
+输出格式：
+【窗口标题】xxx
+【主要内容】xxx
+【控件列表】
+- 按钮 "名称" 位置: (x, y)
+- 输入框 "名称" 位置: (x, y)
+...
+【界面状态】xxx
+)";
+
+    std::string user_message = "请详细描述以下截图中的屏幕内容：";
+    
+    auto result = visionProvider->sendMessageWithImages(user_message, {screenshot_path}, system_prompt);
+    
+    if (result.first) {
+        return result.second;
+    } else {
+        // 从 provider 获取真正的错误信息
+        std::string errorMsg = visionProvider->getLastError();
+        if (errorMsg.empty()) {
+            errorMsg = result.second;
+        }
+        return "Error: 视觉模型转述失败 - " + errorMsg;
+    }
+}
+
+// 显示提供商选择菜单（支持添加新提供商）
+std::string selectProvider(ProviderManager& manager, const std::string& title = "选择 AI 提供商") {
     auto providers = manager.getProviderNames();
     
-    std::cout << "\n=== 选择 AI 提供商 ===" << std::endl;
-    std::cout << "可用的提供商:" << std::endl;
-    
-    int index = 1;
-    int defaultChoice = 1;
-    for (const auto& name : providers) {
-        std::string info = manager.getProviderInfo(name);
-        std::cout << "  " << index << ". " << info << std::endl;
-        if (manager.hasSavedApiKey(name)) {
-            defaultChoice = index;
-        }
-        index++;
+    // 检查是否有可用的提供商
+    if (providers.empty()) {
+        std::cerr << "错误: 没有可用的提供商" << std::endl;
+        logMessage("错误: 没有可用的提供商");
+        return "";
     }
     
-    std::cout << "\n请选择 (1-" << providers.size() << ", 默认 " << defaultChoice << "): ";
-    std::string input;
-    std::getline(std::cin, input);
-    
-    int choice = defaultChoice;
-    if (!input.empty()) {
-        try {
-            choice = std::stoi(input);
-            if (choice < 1 || choice > (int)providers.size()) {
+    while (true) {
+        std::cout << "\n=== " << title << " ===" << std::endl;
+        std::cout << "可用的提供商:" << std::endl;
+        
+        int index = 1;
+        int defaultChoice = 1;
+        for (const auto& name : providers) {
+            std::string info = manager.getProviderInfo(name);
+            std::cout << "  " << index << ". " << info << std::endl;
+            if (manager.hasSavedApiKey(name)) {
+                defaultChoice = index;
+            }
+            index++;
+        }
+        
+        // 添加"添加新提供商"选项
+        std::cout << "  " << index << ". [添加新的提供商]" << std::endl;
+        
+        std::cout << "\n请选择 (1-" << index << ", 默认 " << defaultChoice << ", 输入 " << index << " 添加新提供商): ";
+        std::string input;
+        std::getline(std::cin, input);
+        
+        int choice = defaultChoice;
+        if (!input.empty()) {
+            try {
+                choice = std::stoi(input);
+                if (choice < 1 || choice > index) {
+                    std::cout << "输入超出范围，使用默认值 " << defaultChoice << std::endl;
+                    choice = defaultChoice;
+                }
+            } catch (...) {
+                std::cout << "输入无效，使用默认值 " << defaultChoice << std::endl;
                 choice = defaultChoice;
             }
-        } catch (...) {
-            choice = defaultChoice;
         }
+        
+        // 如果选择添加新提供商
+        if (choice == index) {
+            std::cout << "\n=== 添加新的提供商 ===" << std::endl;
+            
+            std::string providerName;
+            std::cout << "请输入提供商名称 (如 siliconflow, openai 等): ";
+            std::getline(std::cin, providerName);
+            
+            if (providerName.empty()) {
+                std::cout << "提供商名称不能为空，请重新选择。" << std::endl;
+                continue;
+            }
+            
+            std::string baseUrl;
+            std::cout << "请输入 API 基础 URL (如 https://api.siliconflow.cn/v1): ";
+            std::getline(std::cin, baseUrl);
+            
+            if (baseUrl.empty()) {
+                std::cout << "API 基础 URL 不能为空，请重新选择。" << std::endl;
+                continue;
+            }
+            
+            std::string apiKey;
+            std::cout << "请输入 API Key: ";
+            std::getline(std::cin, apiKey);
+            
+            if (apiKey.empty()) {
+                std::cout << "API Key 不能为空，请重新选择。" << std::endl;
+                continue;
+            }
+            
+            std::string modelName;
+            std::cout << "请输入模型名称 (如 glm-4v-flash, gpt-4-vision 等): ";
+            std::getline(std::cin, modelName);
+            
+            if (modelName.empty()) {
+                std::cout << "模型名称不能为空，请重新选择。" << std::endl;
+                continue;
+            }
+            
+            // 注册新提供商
+            ProviderConfig config;
+            config.name = providerName;
+            config.baseUrl = baseUrl;
+            config.modelName = modelName;
+            config.supportsVision = true;
+            config.supportsAudio = false;
+            config.supportsVideo = false;
+            manager.registerProviderConfig(config);
+            
+            // 保存 API Key
+            if (SecureStorage::saveApiKey(apiKey, providerName)) {
+                std::cout << "提供商添加成功！" << std::endl;
+                logMessage("添加新的提供商: " + providerName);
+                
+                // 更新提供商列表
+                providers = manager.getProviderNames();
+                continue;  // 重新显示选择菜单
+            } else {
+                std::cout << "保存 API Key 失败，请重新选择。" << std::endl;
+                continue;
+            }
+        }
+        
+        return providers[choice - 1];
     }
-    
-    return providers[choice - 1];
 }
 
 // 选择模型
@@ -708,7 +888,57 @@ int main(int argc, char* argv[]) {
     
     std::cout << "提供商: " << provider->getProviderName() << std::endl;
     std::cout << "模型: " << provider->getModelName() << std::endl;
-    std::cout << "视觉支持: " << (provider->supportsVision() ? "是" : "否") << std::endl;
+
+    // 让用户判断是否为视觉模型
+    std::cout << "\n该模型是否支持视觉（图像识别）? (y/n): ";
+    char isVisionChoice;
+    std::cin >> isVisionChoice;
+    std::cin.ignore();
+    bool useVision = (isVisionChoice == 'y' || isVisionChoice == 'Y');
+    
+    std::cout << "模式: " << (useVision ? "视觉模式" : "纯文本模式") << std::endl;
+    logMessage("用户选择模式: " + std::string(useVision ? "视觉模式" : "纯文本模式"));
+
+    // 如果不使用视觉模式，询问是否配置视觉模型用于转述
+    AIProviderPtr visionProvider = nullptr;
+    if (!useVision) {
+        std::cout << "\n是否配置视觉模型用于屏幕转述? (y/n): ";
+        char choice;
+        std::cin >> choice;
+        std::cin.ignore();
+        
+        if (choice == 'y' || choice == 'Y') {
+            std::string visionProviderName = selectProvider(manager, "选择视觉模型提供商");
+            
+            if (!visionProviderName.empty()) {
+                // 检查是否需要配置 API Key
+                if (!manager.hasSavedApiKey(visionProviderName)) {
+                    std::string tempProviderName = visionProviderName;
+                    std::string visionModelName;
+                    int result = configureProvider(manager, visionProviderName, visionModelName, tempProviderName);
+                    if (result == 0) {
+                        visionProviderName = tempProviderName;
+                    }
+                }
+                
+                // 初始化视觉模型提供商
+                manager.setCurrentProvider(visionProviderName);
+                visionProvider = manager.getCurrentProvider();
+                
+                if (visionProvider) {
+                    std::cout << "视觉模型已配置: " << visionProvider->getProviderName() << std::endl;
+                    logMessage("视觉模型已配置: " + visionProvider->getProviderName());
+                } else {
+                    std::cout << "警告: 视觉模型配置失败，将使用控件列表模式" << std::endl;
+                    visionProvider = nullptr;
+                }
+                
+                // 重新设置回主提供商
+                manager.setCurrentProvider(providerName);
+                provider = manager.getCurrentProvider();
+            }
+        }
+    }
 
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -717,34 +947,6 @@ int main(int argc, char* argv[]) {
     ActionExecutor::Config config;
     config.screenWidth = screenWidth;
     config.screenHeight = screenHeight;
-    
-    SecurityConfig loadedSecurityConfig = SecurityConfigLoader::loadFromFileAndEnv();
-
-    std::cout << "\n=== 安全能力开关（默认关闭高危能力）===" << std::endl;
-    if (loadedSecurityConfig.loadedFromFile) {
-        std::cout << "检测到 aries_config.json，已加载安全配置（环境变量可覆盖）。" << std::endl;
-        config.allowExecute = loadedSecurityConfig.allowExecute;
-        config.allowFileWrite = loadedSecurityConfig.allowFileWrite;
-        config.allowFileDelete = loadedSecurityConfig.allowFileDelete;
-        config.allowFileRun = loadedSecurityConfig.allowFileRun;
-        config.requireHighRiskConfirmation = loadedSecurityConfig.requireHighRiskConfirmation;
-    } else {
-        std::cout << "未检测到 aries_config.json，进入交互式安全配置。" << std::endl;
-        config.allowExecute = promptYesNo("是否开启 Execute（PowerShell/命令执行）能力？", false);
-        config.allowFileWrite = promptYesNo("是否开启 FileWrite/FileAppend（文件写入）能力？", false);
-        config.allowFileDelete = promptYesNo("是否开启 FileDelete（文件删除）能力？", false);
-        config.allowFileRun = promptYesNo("是否开启 FileRun（执行本地文件）能力？", false);
-        config.requireHighRiskConfirmation = true;
-    }
-    
-    std::cout << "安全配置已应用：" << std::endl;
-    std::cout << "  Execute: " << (config.allowExecute ? "开启" : "关闭") << std::endl;
-    std::cout << "  FileWrite/FileAppend: " << (config.allowFileWrite ? "开启" : "关闭") << std::endl;
-    std::cout << "  FileDelete: " << (config.allowFileDelete ? "开启" : "关闭") << std::endl;
-    std::cout << "  FileRun: " << (config.allowFileRun ? "开启" : "关闭") << std::endl;
-    std::cout << "  高危动作二次确认: 开启" << std::endl;
-    logMessage("安全能力开关已初始化");
-    
     ActionExecutor executor(config);
     
     executor.setLogCallback([](const std::string& msg) {
@@ -753,60 +955,30 @@ int main(int argc, char* argv[]) {
 
     ActionParser parser;
 
-    std::cout << std::endl;
-    std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商): ";
-    std::string user_goal;
-    std::getline(std::cin, user_goal);
-    
-    logMessage("用户输入: " + user_goal);
-    
-    if (user_goal == "quit" || user_goal == "exit") {
-        logMessage("用户退出");
-        return 0;
-    }
-    
-    if (user_goal == "clear") {
-        auto providers = manager.getProviderNames();
-        for (const auto& name : providers) {
-            if (manager.hasSavedApiKey(name)) {
-                SecureStorage::deleteApiKey(name);
-            }
-        }
-        // 同时清除所有自定义提供商
-        auto customProviders = SecureStorage::getCustomProviderList();
-        for (const auto& name : customProviders) {
-            SecureStorage::deleteCustomProvider(name);
-        }
-        std::cout << "已清除所有保存的 API Key 和配置" << std::endl;
-        logMessage("已清除所有 API Key 和配置");
-        std::cout << "\n按任意键退出..." << std::endl;
-        _getch();
-        return 0;
-    }
-    
-    if (user_goal == "provider") {
-        providerName = selectProvider(manager);
-        std::string tempProviderName = providerName;
-        if (!manager.hasSavedApiKey(providerName)) {
-            int result = configureProvider(manager, providerName, modelName, tempProviderName);
-            if (result == 2) {
-                providerName = tempProviderName;
-                modelName = manager.getConfig(providerName)->modelName;
-            }
-        }
-        manager.setCurrentProvider(providerName);
-        provider = manager.getCurrentProvider();
-        std::cout << "已切换到: " << providerName << std::endl;
+    // 外层循环 - 支持返回首页
+    bool returnToHome = true;
+    while (returnToHome) {
+        returnToHome = false;  // 默认不返回首页，除非用户选择
         
-        // 切换提供商后，重新提示输入任务目标
         std::cout << std::endl;
-        std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商): ";
+        std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商, 'update' 检查更新): ";
+        std::string user_goal;
         std::getline(std::cin, user_goal);
+        
         logMessage("用户输入: " + user_goal);
         
         if (user_goal == "quit" || user_goal == "exit") {
             logMessage("用户退出");
             return 0;
+        }
+        
+        if (user_goal == "update") {
+            checkForUpdates(false);
+            std::cout << std::endl;
+            std::cout << "按任意键继续..." << std::endl;
+            _getch();
+            // 继续外层循环，返回首页
+            continue;
         }
         
         if (user_goal == "clear") {
@@ -816,47 +988,91 @@ int main(int argc, char* argv[]) {
                     SecureStorage::deleteApiKey(name);
                 }
             }
+            // 同时清除所有自定义提供商
             auto customProviders = SecureStorage::getCustomProviderList();
             for (const auto& name : customProviders) {
                 SecureStorage::deleteCustomProvider(name);
             }
             std::cout << "已清除所有保存的 API Key 和配置" << std::endl;
             logMessage("已清除所有 API Key 和配置");
-            std::cout << "\n按任意键退出..." << std::endl;
+            std::cout << "\n按任意键继续..." << std::endl;
             _getch();
-            return 0;
+            continue;
         }
         
         if (user_goal == "provider") {
-            std::cout << "已经选择了提供商，请直接输入任务目标" << std::endl;
+            providerName = selectProvider(manager);
+            std::string tempProviderName = providerName;
+            if (!manager.hasSavedApiKey(providerName)) {
+                int result = configureProvider(manager, providerName, modelName, tempProviderName);
+                if (result == 2) {
+                    providerName = tempProviderName;
+                    modelName = manager.getConfig(providerName)->modelName;
+                }
+            }
+            manager.setCurrentProvider(providerName);
+            provider = manager.getCurrentProvider();
+            std::cout << "已切换到: " << providerName << std::endl;
+            
+            // 切换提供商后，重新提示输入任务目标
             std::cout << std::endl;
-            std::cout << "输入任务目标: ";
+            std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商): ";
             std::getline(std::cin, user_goal);
             logMessage("用户输入: " + user_goal);
+            
+            if (user_goal == "quit" || user_goal == "exit") {
+                logMessage("用户退出");
+                return 0;
+            }
+            
+            if (user_goal == "clear") {
+                auto providers = manager.getProviderNames();
+                for (const auto& name : providers) {
+                    if (manager.hasSavedApiKey(name)) {
+                        SecureStorage::deleteApiKey(name);
+                    }
+                }
+                auto customProviders = SecureStorage::getCustomProviderList();
+                for (const auto& name : customProviders) {
+                    SecureStorage::deleteCustomProvider(name);
+                }
+                std::cout << "已清除所有保存的 API Key 和配置" << std::endl;
+                logMessage("已清除所有 API Key 和配置");
+                std::cout << "\n按任意键继续..." << std::endl;
+                _getch();
+                continue;
+            }
+            
+            if (user_goal == "provider") {
+                std::cout << "已经选择了提供商，请直接输入任务目标" << std::endl;
+                std::cout << std::endl;
+                std::cout << "输入任务目标: ";
+                std::getline(std::cin, user_goal);
+                logMessage("用户输入: " + user_goal);
+            }
         }
-    }
 
-    std::vector<InstalledApp> installedApps;
-    std::string appsListString;
-    bool appsLoaded = false;
-    std::string lastExecuteOutput;
+        std::vector<InstalledApp> installedApps;
+        std::string appsListString;
+        bool appsLoaded = false;
+        std::string lastExecuteOutput;
 
-    // 动作历史记录（保存所有历史）
-    struct ActionHistory {
-        std::string action;
-        std::string thinking;
-        std::string timestamp;
-    };
-    std::vector<ActionHistory> actionHistory;
-    const size_t MAX_HISTORY_TO_SHOW = 5;  // 最多显示给AI的历史次数
+        // 动作历史记录（保存所有历史）
+        struct ActionHistory {
+            std::string action;
+            std::string thinking;
+            std::string timestamp;
+        };
+        std::vector<ActionHistory> actionHistory;
+        const size_t MAX_HISTORY_TO_SHOW = 5;  // 最多显示给AI的历史次数
 
-    int max_iterations = 10;
-    int iteration = 0;
-    int totalSteps = 0;  // 总步数计数器（不重置）
-    bool continueExecution = true;
-    bool shouldRetry = false;  // 重试标志
-    
-    while (continueExecution) {
+        int max_iterations = 10;
+        int iteration = 0;
+        int totalSteps = 0;  // 总步数计数器（不重置）
+        bool continueExecution = true;
+        bool shouldRetry = false;  // 重试标志
+        
+        while (continueExecution) {
         std::cout << std::endl;
         
         // 如果不是重试，且不是第一步，等待1秒
@@ -871,23 +1087,79 @@ int main(int argc, char* argv[]) {
         std::cout << "=== 迭代 " << (iteration + 1) << "/" << max_iterations << " ===" << std::endl;
         logMessage("=== 迭代 " + std::to_string(iteration + 1) + "/" + std::to_string(max_iterations) + " ===");
 
-        std::cout << "正在截取屏幕..." << std::endl;
+        std::string system_prompt;
+        std::string user_message = "任务目标: " + user_goal;
+        std::pair<bool, std::string> result;
         std::string screenshot_path = "screenshot.png";
         
-        if (!capture_screen(screenshot_path)) {
-            std::cerr << "Error: 截屏失败" << std::endl;
-            logMessage("错误: 截屏失败");
-            std::cout << "\n按任意键退出..." << std::endl;
-            _getch();
-            return 1;
+        if (useVision) {
+            // 视觉模型：截图并上传
+            std::cout << "正在截取屏幕..." << std::endl;
+            
+            if (!capture_screen(screenshot_path)) {
+                std::cerr << "Error: 截屏失败" << std::endl;
+                logMessage("错误: 截屏失败");
+                std::cout << "\n按任意键继续..." << std::endl;
+                _getch();
+                continue;
+            }
+            
+            std::cout << "屏幕已保存到: " << screenshot_path << std::endl;
+            logMessage("屏幕已保存");
+            
+            system_prompt = PromptTemplates::buildSystemPrompt(screenWidth, screenHeight, false);
+        } else {
+            // 纯文本模型：可以使用视觉模型转述，或直接使用控件列表
+            if (visionProvider) {
+                // 使用视觉模型转述屏幕内容
+                std::cout << "正在截取屏幕并由视觉模型转述..." << std::endl;
+                logMessage("正在截取屏幕并由视觉模型转述");
+                
+                if (!capture_screen(screenshot_path)) {
+                    std::cerr << "Error: 截屏失败" << std::endl;
+                    logMessage("错误: 截屏失败");
+                    std::cout << "\n按任意键继续..." << std::endl;
+                    _getch();
+                    continue;
+                }
+                
+                std::cout << "屏幕已保存，正在使用视觉模型分析..." << std::endl;
+                std::string visualDesc = getVisualDescription(visionProvider, screenshot_path);
+                DeleteFileA(screenshot_path.c_str());
+                
+                if (visualDesc.find("Error:") != std::string::npos) {
+                    std::cerr << "视觉模型转述失败: " << visualDesc << std::endl;
+                    logMessage("视觉模型转述失败: " + visualDesc);
+                    // 回退到控件列表模式
+                    std::cout << "回退到控件列表模式..." << std::endl;
+                    std::string controlList = getControlListDescription();
+                    system_prompt = PromptTemplates::buildTextModeSystemPrompt();
+                    user_message += "\n\n【当前屏幕控件信息】\n";
+                    user_message += controlList;
+                } else {
+                    std::cout << "视觉模型转述完成" << std::endl;
+                    logMessage("视觉模型转述完成");
+                    system_prompt = PromptTemplates::buildTextModeSystemPrompt();
+                    user_message += "\n\n【屏幕内容描述（由视觉模型生成）】\n";
+                    user_message += visualDesc;
+                }
+                
+                user_message += "\n\n请根据上述屏幕信息分析当前界面状态，并给出下一步操作。";
+            } else {
+                // 使用控件列表模式
+                std::cout << "正在获取控件列表..." << std::endl;
+                logMessage("正在获取控件列表（纯文本模式）");
+                
+                std::string controlList = getControlListDescription();
+                
+                // 构建纯文本模式的系统提示词
+                system_prompt = PromptTemplates::buildTextModeSystemPrompt();
+                
+                user_message += "\n\n【当前屏幕控件信息】\n";
+                user_message += controlList;
+                user_message += "\n\n请根据上述控件信息分析当前界面状态，并给出下一步操作。";
+            }
         }
-        
-        std::cout << "屏幕已保存到: " << screenshot_path << std::endl;
-        logMessage("屏幕已保存");
-
-        std::string system_prompt = PromptTemplates::buildSystemPrompt(screenWidth, screenHeight, false);
-        
-        std::string user_message = "任务目标: " + user_goal;
         
         // 添加动作历史反馈（所有历史，但限制显示数量）
         if (!actionHistory.empty()) {
@@ -929,14 +1201,22 @@ int main(int argc, char* argv[]) {
             user_message += "\n\n" + appsListString;
         }
         
-        user_message += "\n\n请分析当前屏幕并给出下一步操作。";
+        if (useVision) {
+            user_message += "\n\n请分析当前屏幕并给出下一步操作。";
+        }
 
         std::cout << "正在发送请求到 AI..." << std::endl;
         logMessage("发送请求到 AI...");
 
-        auto result = provider->sendMessageWithImages(user_message, {screenshot_path}, system_prompt);
-
-        DeleteFileA(screenshot_path.c_str());
+        if (useVision) {
+            result = provider->sendMessageWithImages(user_message, {screenshot_path}, system_prompt);
+            DeleteFileA(screenshot_path.c_str());
+        } else {
+            std::vector<ChatMessage> messages;
+            messages.emplace_back("system", system_prompt);
+            messages.emplace_back("user", user_message);
+            result = provider->sendMessage(messages, system_prompt);
+        }
 
         if (result.first) {
             std::cout << std::endl;
@@ -1114,8 +1394,18 @@ int main(int argc, char* argv[]) {
 
             if (action.action == "finish") {
                 std::cout << std::endl;
+                std::cout << "========================================" << std::endl;
                 std::cout << "任务完成!" << std::endl;
+                std::cout << "========================================" << std::endl;
                 logMessage("任务完成!");
+                
+                // 显示完成信息
+                if (!exec_result.message.empty()) {
+                    std::cout << std::endl;
+                    std::cout << "任务结果:" << std::endl;
+                    std::cout << exec_result.message << std::endl;
+                }
+                
                 continueExecution = false;
                 break;
             }
@@ -1145,9 +1435,10 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            std::cout << "\n按任意键退出..." << std::endl;
+            std::cout << "\n按任意键返回首页..." << std::endl;
             _getch();
-            return 1;
+            returnToHome = true;
+            break;
         }
 
         // 增加迭代计数
@@ -1175,9 +1466,46 @@ int main(int argc, char* argv[]) {
         Sleep(1000);
     }
 
+    // 任务完成，询问是否返回首页
+    std::cout << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "是否返回首页? (y/n): ";
+    char returnChoice;
+    std::cin >> returnChoice;
+    std::cin.ignore();
+    
+    if (returnChoice == 'y' || returnChoice == 'Y') {
+        // 重置所有状态，返回首页
+        iteration = 0;
+        totalSteps = 0;
+        actionHistory.clear();
+        lastExecuteOutput.clear();
+        appsLoaded = false;
+        appsListString.clear();
+        installedApps.clear();
+        
+        std::cout << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << "  Open-Aries-AI - Windows 智能自动化助手  版本 " << CURRENT_VERSION << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << std::endl;
+        
+        // 设置标志，返回外层循环（首页）
+        returnToHome = true;
+    }
+    
+    // 内层循环结束，检查是否返回首页
+    if (returnToHome) {
+        continue;  // 继续外层循环，返回首页
+    }
+    
+    // 用户选择退出
+    break;
+    }
+    
     logMessage("程序结束");
     std::cout << std::endl;
-    std::cout << "=== 完成 ===" << std::endl;
+    std::cout << "感谢使用 Open-Aries-AI!" << std::endl;
     std::cout << "按任意键退出..." << std::endl;
     _getch();
 

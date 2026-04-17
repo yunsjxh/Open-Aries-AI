@@ -357,22 +357,36 @@ private:
         HINTERNET hConnect = InternetConnectA(hInternet, hostName, 
             urlComp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
         if (!hConnect) {
-            lastError_ = "Failed to connect to server";
+            DWORD errorCode = GetLastError();
+            std::ostringstream oss;
+            oss << "Failed to connect to server (Error " << errorCode << "): " << hostName;
+            lastError_ = oss.str();
             InternetCloseHandle(hInternet);
             return {false, ""};
         }
         
         const char* acceptTypes[] = {"application/json", NULL};
+        DWORD flags = 0;
+        if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
+            flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | 
+                    INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
+        }
         HINTERNET hRequest = HttpOpenRequestA(hConnect, "POST", urlPath, 
-            NULL, NULL, acceptTypes, 
-            (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? INTERNET_FLAG_SECURE : 0, 0);
+            NULL, NULL, acceptTypes, flags, 0);
         
         if (!hRequest) {
-            lastError_ = "Failed to create request";
+            DWORD errorCode = GetLastError();
+            std::ostringstream oss;
+            oss << "Failed to create request (Error " << errorCode << ")";
+            lastError_ = oss.str();
             InternetCloseHandle(hConnect);
             InternetCloseHandle(hInternet);
             return {false, ""};
         }
+        
+        DWORD timeout = 60000;
+        InternetSetOptionA(hRequest, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+        InternetSetOptionA(hRequest, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
         
         std::string authHeader = "Authorization: Bearer " + apiKey_;
         std::string contentType = "Content-Type: application/json";
@@ -381,7 +395,27 @@ private:
         HttpAddRequestHeadersA(hRequest, contentType.c_str(), (DWORD)contentType.length(), HTTP_ADDREQ_FLAG_ADD);
         
         if (!HttpSendRequestA(hRequest, NULL, 0, (LPVOID)jsonBody.c_str(), (DWORD)jsonBody.length())) {
-            lastError_ = "Failed to send request";
+            DWORD errorCode = GetLastError();
+            std::ostringstream oss;
+            oss << "Failed to send request (Error " << errorCode << "): ";
+            
+            char* errorMsg = nullptr;
+            FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                          NULL, errorCode, 0, (LPSTR)&errorMsg, 0, NULL);
+            if (errorMsg) {
+                std::string msg(errorMsg);
+                LocalFree(errorMsg);
+                size_t end = msg.find_last_not_of("\r\n");
+                if (end != std::string::npos) {
+                    msg = msg.substr(0, end + 1);
+                }
+                oss << msg;
+            } else {
+                oss << "Unknown error";
+            }
+            
+            oss << " [URL: " << baseUrl_ << ", Body size: " << jsonBody.length() << " bytes]";
+            lastError_ = oss.str();
             InternetCloseHandle(hRequest);
             InternetCloseHandle(hConnect);
             InternetCloseHandle(hInternet);
