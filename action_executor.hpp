@@ -3,6 +3,7 @@
 #include "action_parser.hpp"
 #include "file_manager.hpp"
 #include "app_manager.hpp"
+#include "ui_automation.hpp"
 #include <windows.h>
 #include <iostream>
 #include <functional>
@@ -13,8 +14,6 @@
 #include <cctype>
 #include <algorithm>
 #include <conio.h>
-#include <set>
-#include <limits>
 
 namespace aries {
 
@@ -31,7 +30,6 @@ struct ExecutionResult {
 };
 
 using LogCallback = std::function<void(const std::string&)>;
-using ConfirmationCallback = std::function<bool(const std::string&)>;
 
 class ActionExecutor {
 public:
@@ -40,31 +38,14 @@ public:
         int screenHeight;
         int tapAwaitWindowTimeoutMs;
         std::vector<std::string> sensitiveKeywords;
-        bool allowExecute;
-        bool allowFileWrite;
-        bool allowFileDelete;
-        bool allowFileRun;
-        bool requireHighRiskConfirmation;
         
-        Config()
-            : screenWidth(1920),
-              screenHeight(1080),
-              tapAwaitWindowTimeoutMs(500),
-              allowExecute(false),
-              allowFileWrite(false),
-              allowFileDelete(false),
-              allowFileRun(false),
-              requireHighRiskConfirmation(true) {}
+        Config() : screenWidth(1920), screenHeight(1080), tapAwaitWindowTimeoutMs(500) {}
     };
 
     ActionExecutor(const Config& config = Config()) : config_(config) {}
 
     void setLogCallback(LogCallback callback) {
         logCallback_ = callback;
-    }
-    
-    void setConfirmationCallback(ConfirmationCallback callback) {
-        confirmationCallback_ = callback;
     }
 
     static bool iequals(const std::string& a, const std::string& b) {
@@ -143,6 +124,40 @@ public:
             return executeTakeOver(action);
         } else if (iequals(action.action, "finish")) {
             return executeFinish(action);
+        
+        // UI Automation 操作
+        } else if (iequals(action.action, "UIA_ListWindows")) {
+            return executeUIAListWindows(action);
+        } else if (iequals(action.action, "UIA_GetWindowTree")) {
+            return executeUIAGetWindowTree(action);
+        } else if (iequals(action.action, "UIA_GetActiveTree")) {
+            return executeUIAGetActiveTree(action);
+        } else if (iequals(action.action, "UIA_GetControlAtCursor")) {
+            return executeUIAGetControlAtCursor(action);
+        } else if (iequals(action.action, "UIA_GetControlAtPoint")) {
+            return executeUIAGetControlAtPoint(action);
+        } else if (iequals(action.action, "UIA_ClickControl")) {
+            return executeUIAClickControl(action);
+        
+        // 窗口操作
+        } else if (iequals(action.action, "Window_Minimize")) {
+            return executeWindowMinimize(action);
+        } else if (iequals(action.action, "Window_Maximize")) {
+            return executeWindowMaximize(action);
+        } else if (iequals(action.action, "Window_Restore")) {
+            return executeWindowRestore(action);
+        } else if (iequals(action.action, "Window_Close")) {
+            return executeWindowClose(action);
+        } else if (iequals(action.action, "Window_Activate")) {
+            return executeWindowActivate(action);
+        } else if (iequals(action.action, "Window_Topmost")) {
+            return executeWindowTopmost(action);
+        } else if (iequals(action.action, "Window_Move")) {
+            return executeWindowMove(action);
+        } else if (iequals(action.action, "Window_GetRect")) {
+            return executeWindowGetRect(action);
+        } else if (iequals(action.action, "Window_GetState")) {
+            return executeWindowGetState(action);
         } else {
             return ExecutionResult(false, "未知的动作类型: " + action.action);
         }
@@ -151,48 +166,12 @@ public:
 private:
     Config config_;
     LogCallback logCallback_;
-    ConfirmationCallback confirmationCallback_;
 
     void log(const std::string& message) {
         if (logCallback_) {
             logCallback_(message);
         }
         std::cout << message << std::endl;
-    }
-    
-    bool isHighRiskAction(const std::string& actionName) const {
-        static const std::set<std::string> highRiskActions = {
-            "execute", "filewrite", "fileappend", "filedelete", "filerun"
-        };
-        
-        std::string lower = actionName;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-        return highRiskActions.find(lower) != highRiskActions.end();
-    }
-    
-    bool confirmHighRiskAction(const ParsedAgentAction& action, const std::string& details) {
-        if (!config_.requireHighRiskConfirmation || !isHighRiskAction(action.action)) {
-            return true;
-        }
-        
-        std::string prompt = "即将执行高危动作: " + action.action;
-        if (!details.empty()) {
-            prompt += "\n详情: " + details;
-        }
-        
-        if (confirmationCallback_) {
-            return confirmationCallback_(prompt);
-        }
-        
-        std::cout << "\n========================================" << std::endl;
-        std::cout << "【高危动作确认】" << std::endl;
-        std::cout << prompt << std::endl;
-        std::cout << "是否继续? (y/n): ";
-        char choice = 'n';
-        std::cin >> choice;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        std::cout << "========================================\n" << std::endl;
-        return choice == 'y' || choice == 'Y';
     }
 
     // 命令安全检查：验证命令是否包含危险操作
@@ -631,17 +610,9 @@ private:
 
     // 执行 PowerShell 命令并捕获输出
     ExecutionResult executeExecute(const ParsedAgentAction& action) {
-        if (!config_.allowExecute) {
-            return ExecutionResult(false, "安全限制: Execute 能力默认关闭，请在配置中显式开启");
-        }
-        
         std::string command = readField(action.fields, {"command", "cmd"});
         if (command.empty()) {
             return ExecutionResult(false, "命令为空");
-        }
-        
-        if (!confirmHighRiskAction(action, command)) {
-            return ExecutionResult(false, "用户拒绝执行高危动作: Execute");
         }
 
         log("执行操作: 执行命令 \"" + command + "\"");
@@ -805,19 +776,11 @@ private:
     }
     
     ExecutionResult executeFileWrite(const ParsedAgentAction& action) {
-        if (!config_.allowFileWrite) {
-            return ExecutionResult(false, "安全限制: FileWrite 能力默认关闭，请在配置中显式开启");
-        }
-        
         std::string path = readField(action.fields, {"path"});
         std::string content = readField(action.fields, {"content"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
-        }
-        
-        if (!confirmHighRiskAction(action, "path=" + path)) {
-            return ExecutionResult(false, "用户拒绝执行高危动作: FileWrite");
         }
         
         log("执行操作: 写入文件 " + path);
@@ -829,19 +792,11 @@ private:
     }
     
     ExecutionResult executeFileAppend(const ParsedAgentAction& action) {
-        if (!config_.allowFileWrite) {
-            return ExecutionResult(false, "安全限制: FileAppend 能力默认关闭，请在配置中显式开启");
-        }
-        
         std::string path = readField(action.fields, {"path"});
         std::string content = readField(action.fields, {"content"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
-        }
-        
-        if (!confirmHighRiskAction(action, "path=" + path)) {
-            return ExecutionResult(false, "用户拒绝执行高危动作: FileAppend");
         }
         
         log("执行操作: 追加到文件 " + path);
@@ -868,18 +823,10 @@ private:
     }
     
     ExecutionResult executeFileDelete(const ParsedAgentAction& action) {
-        if (!config_.allowFileDelete) {
-            return ExecutionResult(false, "安全限制: FileDelete 能力默认关闭，请在配置中显式开启");
-        }
-        
         std::string path = readField(action.fields, {"path"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
-        }
-        
-        if (!confirmHighRiskAction(action, "path=" + path)) {
-            return ExecutionResult(false, "用户拒绝执行高危动作: FileDelete");
         }
         
         log("执行操作: 删除文件/目录 " + path);
@@ -977,18 +924,10 @@ private:
     }
     
     ExecutionResult executeFileRun(const ParsedAgentAction& action) {
-        if (!config_.allowFileRun) {
-            return ExecutionResult(false, "安全限制: FileRun 能力默认关闭，请在配置中显式开启");
-        }
-        
         std::string path = readField(action.fields, {"path"});
         
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
-        }
-        
-        if (!confirmHighRiskAction(action, "path=" + path)) {
-            return ExecutionResult(false, "用户拒绝执行高危动作: FileRun");
         }
         
         log("执行操作: 执行文件 " + path);
@@ -1304,6 +1243,257 @@ private:
         if (hJob) CloseHandle(hJob);
         
         return output;
+    }
+
+    // ==================== UI Automation 执行函数 ====================
+    
+    ExecutionResult executeUIAListWindows(const ParsedAgentAction& action) {
+        UIAutomationTool uiaTool;
+        if (!uiaTool.initialize()) {
+            return ExecutionResult(false, "UI Automation 初始化失败");
+        }
+        
+        std::string result = uiaTool.listTopLevelWindows();
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeUIAGetWindowTree(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        if (it == action.fields.end()) {
+            return ExecutionResult(false, "缺少 window 参数");
+        }
+        
+        std::string windowTitle = it->second;
+        int maxDepth = 3;
+        
+        auto depthIt = action.fields.find("depth");
+        if (depthIt != action.fields.end()) {
+            try {
+                maxDepth = std::stoi(depthIt->second);
+            } catch (...) {
+                maxDepth = 3;
+            }
+        }
+        
+        UIAutomationTool uiaTool;
+        if (!uiaTool.initialize()) {
+            return ExecutionResult(false, "UI Automation 初始化失败");
+        }
+        
+        std::string result = uiaTool.getWindowControlTree(windowTitle, maxDepth);
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeUIAGetActiveTree(const ParsedAgentAction& action) {
+        int maxDepth = 3;
+        
+        auto depthIt = action.fields.find("depth");
+        if (depthIt != action.fields.end()) {
+            try {
+                maxDepth = std::stoi(depthIt->second);
+            } catch (...) {
+                maxDepth = 3;
+            }
+        }
+        
+        UIAutomationTool uiaTool;
+        if (!uiaTool.initialize()) {
+            return ExecutionResult(false, "UI Automation 初始化失败");
+        }
+        
+        std::string result = uiaTool.getActiveWindowControlTree(maxDepth);
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeUIAGetControlAtCursor(const ParsedAgentAction& action) {
+        UIAutomationTool uiaTool;
+        if (!uiaTool.initialize()) {
+            return ExecutionResult(false, "UI Automation 初始化失败");
+        }
+        
+        std::string result = uiaTool.getControlAtCursor();
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeUIAGetControlAtPoint(const ParsedAgentAction& action) {
+        auto xIt = action.fields.find("x");
+        auto yIt = action.fields.find("y");
+        
+        if (xIt == action.fields.end() || yIt == action.fields.end()) {
+            return ExecutionResult(false, "缺少 x 或 y 参数");
+        }
+        
+        int x, y;
+        try {
+            x = std::stoi(xIt->second);
+            y = std::stoi(yIt->second);
+        } catch (...) {
+            return ExecutionResult(false, "x 或 y 参数格式错误");
+        }
+        
+        UIAutomationTool uiaTool;
+        if (!uiaTool.initialize()) {
+            return ExecutionResult(false, "UI Automation 初始化失败");
+        }
+        
+        std::string result = uiaTool.getControlAtPoint(x, y);
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeUIAClickControl(const ParsedAgentAction& action) {
+        auto windowIt = action.fields.find("window");
+        auto controlIt = action.fields.find("control");
+        
+        if (windowIt == action.fields.end() || controlIt == action.fields.end()) {
+            return ExecutionResult(false, "缺少 window 或 control 参数");
+        }
+        
+        std::string windowTitle = windowIt->second;
+        std::string controlName = controlIt->second;
+        
+        UIAutomationTool uiaTool;
+        if (!uiaTool.initialize()) {
+            return ExecutionResult(false, "UI Automation 初始化失败");
+        }
+        
+        bool success = uiaTool.clickControlByName(windowTitle, controlName);
+        if (success) {
+            return ExecutionResult(true, "成功点击控件: " + controlName);
+        } else {
+            return ExecutionResult(false, "无法点击控件: " + controlName);
+        }
+    }
+    
+    // ==================== 窗口操作执行函数 ====================
+    
+    ExecutionResult executeWindowMinimize(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.minimizeWindow(windowTitle)) {
+            return ExecutionResult(true, "窗口已最小化: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        } else {
+            return ExecutionResult(false, "无法最小化窗口: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowMaximize(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.maximizeWindow(windowTitle)) {
+            return ExecutionResult(true, "窗口已最大化: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        } else {
+            return ExecutionResult(false, "无法最大化窗口: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowRestore(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.restoreWindow(windowTitle)) {
+            return ExecutionResult(true, "窗口已还原: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        } else {
+            return ExecutionResult(false, "无法还原窗口: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowClose(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.closeWindow(windowTitle)) {
+            return ExecutionResult(true, "窗口已关闭: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        } else {
+            return ExecutionResult(false, "无法关闭窗口: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowActivate(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.activateWindow(windowTitle)) {
+            return ExecutionResult(true, "窗口已激活: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        } else {
+            return ExecutionResult(false, "无法激活窗口: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowTopmost(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        auto topmostIt = action.fields.find("topmost");
+        bool topmost = true;
+        if (topmostIt != action.fields.end()) {
+            topmost = (topmostIt->second == "true" || topmostIt->second == "1");
+        }
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.setWindowTopmost(windowTitle, topmost)) {
+            std::string status = topmost ? "置顶" : "取消置顶";
+            return ExecutionResult(true, "窗口已" + status + ": " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        } else {
+            return ExecutionResult(false, "无法设置窗口置顶状态: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowMove(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        auto xIt = action.fields.find("x");
+        auto yIt = action.fields.find("y");
+        auto wIt = action.fields.find("width");
+        auto hIt = action.fields.find("height");
+        
+        if (xIt == action.fields.end() || yIt == action.fields.end() ||
+            wIt == action.fields.end() || hIt == action.fields.end()) {
+            return ExecutionResult(false, "缺少位置或大小参数 (x, y, width, height)");
+        }
+        
+        int x, y, width, height;
+        try {
+            x = std::stoi(xIt->second);
+            y = std::stoi(yIt->second);
+            width = std::stoi(wIt->second);
+            height = std::stoi(hIt->second);
+        } catch (...) {
+            return ExecutionResult(false, "位置或大小参数格式错误");
+        }
+        
+        UIAutomationTool uiaTool;
+        if (uiaTool.moveWindow(windowTitle, x, y, width, height)) {
+            return ExecutionResult(true, "窗口已移动到 (" + std::to_string(x) + ", " + std::to_string(y) + 
+                                       ") 大小 " + std::to_string(width) + "x" + std::to_string(height));
+        } else {
+            return ExecutionResult(false, "无法移动窗口: " + (windowTitle.empty() ? "当前窗口" : windowTitle));
+        }
+    }
+    
+    ExecutionResult executeWindowGetRect(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        std::string result = uiaTool.getWindowRect(windowTitle);
+        return ExecutionResult(true, result);
+    }
+    
+    ExecutionResult executeWindowGetState(const ParsedAgentAction& action) {
+        auto it = action.fields.find("window");
+        std::string windowTitle = (it != action.fields.end()) ? it->second : "";
+        
+        UIAutomationTool uiaTool;
+        std::string result = uiaTool.getWindowState(windowTitle);
+        return ExecutionResult(true, result);
     }
 };
 

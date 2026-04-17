@@ -10,32 +10,47 @@
 #include <algorithm>
 #include <intrin.h>
 #include <map>
-#include <wincrypt.h>
 
 namespace aries {
 
 class SecureStorage {
 public:
-    // 保存加密的 API Key (支持多提供商)
+    // 保存加密的 API Key (支持多提供商) - 使用 DPAPI + 硬件绑定双重加密
     static bool saveApiKey(const std::string& apiKey, const std::string& provider = "default") {
-        std::string encryptedDpapi = protectWithDPAPI(apiKey);
-        if (encryptedDpapi.empty()) {
+        // 第一层加密：硬件绑定加密
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) {
             return false;
         }
+        
+        std::string salt = generateSalt();
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        std::string hardwareEncrypted = xorEncrypt(apiKey, hashedKey);
+        
+        // 第二层加密：DPAPI 加密
+        std::string dpapiEncrypted = dpapiEncrypt(hardwareEncrypted);
+        if (dpapiEncrypted.empty()) {
+            return false;
+        }
+        
+        // 混淆和存储
+        std::string hexEncrypted = stringToHex(dpapiEncrypted);
+        std::string obfuscated = obfuscateWithRandomChars(hexEncrypted);
         
         std::ofstream file(getStoragePath(provider), std::ios::out);
         if (!file.is_open()) {
             return false;
         }
         
-        file << "DPAPI_V1" << std::endl;
-        file << encryptedDpapi << std::endl;
+        file << salt << std::endl;
+        file << obfuscated << std::endl;
         file.close();
         
         return true;
     }
     
-    // 读取并解密 API Key (支持多提供商)
+    // 读取并解密 API Key (支持多提供商) - 使用 DPAPI + 硬件绑定双重解密
     static std::string loadApiKey(const std::string& provider = "default") {
         std::ifstream file(getStoragePath(provider), std::ios::in);
         if (!file.is_open()) {
@@ -52,13 +67,21 @@ public:
         if (salt.empty() || obfuscated.empty()) {
             return "";
         }
-
-        // 新格式：DPAPI
-        if (salt == "DPAPI_V1") {
-            return unprotectWithDPAPI(obfuscated);
+        
+        // 反混淆
+        std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
+        std::string dpapiEncrypted = hexToString(hexEncrypted);
+        if (dpapiEncrypted.empty()) {
+            return "";
         }
-
-        // 旧格式兼容：硬件指纹 + XOR + 混淆
+        
+        // 第一层解密：DPAPI 解密
+        std::string hardwareEncrypted = dpapiDecrypt(dpapiEncrypted);
+        if (hardwareEncrypted.empty()) {
+            return "";
+        }
+        
+        // 第二层解密：硬件绑定解密
         std::string hardwareId = getHardwareFingerprint();
         if (hardwareId.empty()) {
             return "";
@@ -66,13 +89,9 @@ public:
         
         std::string key = hardwareId + salt;
         std::string hashedKey = hashString(key);
-        std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
-        std::string encrypted = hexToString(hexEncrypted);
-        if (encrypted.empty()) {
-            return "";
-        }
+        std::string decrypted = xorEncrypt(hardwareEncrypted, hashedKey);
         
-        return xorEncrypt(encrypted, hashedKey);
+        return decrypted;
     }
     
     // 检查是否已保存 API Key (支持多提供商)
@@ -91,24 +110,41 @@ public:
         return deleteApiKey("siliconflow");
     }
     
-    // 保存自定义提供商配置（支持多个）
+    // 保存自定义提供商配置（支持多个）- 使用 DPAPI + 硬件绑定双重加密
     // 格式: baseUrl|modelName|apiKey
     static bool saveCustomProvider(const std::string& name, const std::string& baseUrl, 
                                     const std::string& modelName, const std::string& apiKey) {
-        // 格式: baseUrl|modelName|apiKey
-        std::string data = baseUrl + "|" + modelName + "|" + apiKey;
-        std::string encryptedDpapi = protectWithDPAPI(data);
-        if (encryptedDpapi.empty()) {
+        // 第一层加密：硬件绑定加密
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) {
             return false;
         }
+        
+        std::string salt = generateSalt();
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        
+        // 格式: baseUrl|modelName|apiKey
+        std::string data = baseUrl + "|" + modelName + "|" + apiKey;
+        std::string hardwareEncrypted = xorEncrypt(data, hashedKey);
+        
+        // 第二层加密：DPAPI 加密
+        std::string dpapiEncrypted = dpapiEncrypt(hardwareEncrypted);
+        if (dpapiEncrypted.empty()) {
+            return false;
+        }
+        
+        // 混淆和存储
+        std::string hexEncrypted = stringToHex(dpapiEncrypted);
+        std::string obfuscated = obfuscateWithRandomChars(hexEncrypted);
         
         std::ofstream file(getCustomProviderPath(name), std::ios::out);
         if (!file.is_open()) {
             return false;
         }
         
-        file << "DPAPI_V1" << std::endl;
-        file << encryptedDpapi << std::endl;
+        file << salt << std::endl;
+        file << obfuscated << std::endl;
         file.close();
         
         // 同时更新自定义提供商列表
@@ -117,7 +153,7 @@ public:
         return true;
     }
     
-    // 加载自定义提供商配置
+    // 加载自定义提供商配置 - 使用 DPAPI + 硬件绑定双重解密
     // 返回: {baseUrl, modelName, apiKey}
     static std::tuple<std::string, std::string, std::string> loadCustomProvider(const std::string& name) {
         std::ifstream file(getCustomProviderPath(name), std::ios::in);
@@ -136,29 +172,28 @@ public:
             return {"", "", ""};
         }
         
-        std::string decrypted;
-        if (salt == "DPAPI_V1") {
-            decrypted = unprotectWithDPAPI(obfuscated);
-        } else {
-            // 旧格式兼容：硬件指纹 + XOR + 混淆
-            std::string hardwareId = getHardwareFingerprint();
-            if (hardwareId.empty()) {
-                return {"", "", ""};
-            }
-            
-            std::string key = hardwareId + salt;
-            std::string hashedKey = hashString(key);
-            std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
-            std::string encrypted = hexToString(hexEncrypted);
-            if (encrypted.empty()) {
-                return {"", "", ""};
-            }
-            decrypted = xorEncrypt(encrypted, hashedKey);
-        }
-        
-        if (decrypted.empty()) {
+        // 反混淆
+        std::string hexEncrypted = deobfuscateRandomChars(obfuscated);
+        std::string dpapiEncrypted = hexToString(hexEncrypted);
+        if (dpapiEncrypted.empty()) {
             return {"", "", ""};
         }
+        
+        // 第一层解密：DPAPI 解密
+        std::string hardwareEncrypted = dpapiDecrypt(dpapiEncrypted);
+        if (hardwareEncrypted.empty()) {
+            return {"", "", ""};
+        }
+        
+        // 第二层解密：硬件绑定解密
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) {
+            return {"", "", ""};
+        }
+        
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        std::string decrypted = xorEncrypt(hardwareEncrypted, hashedKey);
         
         // 解析 baseUrl|modelName|apiKey
         std::vector<std::string> parts;
@@ -280,6 +315,78 @@ private:
         }
         return ".api_key_" + provider + "_secure";
     }
+    
+    // ==================== DPAPI 加密/解密 ====================
+    
+    // 使用 DPAPI 加密数据（用户级别，绑定当前 Windows 用户账户）
+    static std::string dpapiEncrypt(const std::string& plaintext) {
+        if (plaintext.empty()) {
+            return "";
+        }
+        
+        DATA_BLOB dataIn;
+        DATA_BLOB dataOut;
+        
+        dataIn.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plaintext.data()));
+        dataIn.cbData = static_cast<DWORD>(plaintext.length());
+        
+        // 使用 CryptProtectData 进行加密
+        // CRYPTPROTECT_UI_FORBIDDEN: 禁止显示 UI
+        // CRYPTPROTECT_LOCAL_MACHINE: 绑定到本地机器（可选，这里使用用户级别）
+        if (!CryptProtectData(
+                &dataIn,
+                L"Open-Aries-AI API Key",  // 描述字符串
+                nullptr,                    // 可选的熵值
+                nullptr,                    // 保留
+                nullptr,                    // 提示结构
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &dataOut)) {
+            return "";
+        }
+        
+        // 将加密后的数据转换为字符串
+        std::string result(reinterpret_cast<char*>(dataOut.pbData), dataOut.cbData);
+        
+        // 释放 DPAPI 分配的内存
+        LocalFree(dataOut.pbData);
+        
+        return result;
+    }
+    
+    // 使用 DPAPI 解密数据
+    static std::string dpapiDecrypt(const std::string& ciphertext) {
+        if (ciphertext.empty()) {
+            return "";
+        }
+        
+        DATA_BLOB dataIn;
+        DATA_BLOB dataOut;
+        
+        dataIn.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(ciphertext.data()));
+        dataIn.cbData = static_cast<DWORD>(ciphertext.length());
+        
+        // 使用 CryptUnprotectData 进行解密
+        if (!CryptUnprotectData(
+                &dataIn,
+                nullptr,                    // 描述字符串（可选输出）
+                nullptr,                    // 可选的熵值
+                nullptr,                    // 保留
+                nullptr,                    // 提示结构
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &dataOut)) {
+            return "";
+        }
+        
+        // 将解密后的数据转换为字符串
+        std::string result(reinterpret_cast<char*>(dataOut.pbData), dataOut.cbData);
+        
+        // 释放 DPAPI 分配的内存
+        LocalFree(dataOut.pbData);
+        
+        return result;
+    }
+    
+    // ==================== 硬件指纹 ====================
     
     // 获取硬件指纹（CPU + 硬盘 + 主板序列号）
     static std::string getHardwareFingerprint() {
@@ -517,48 +624,6 @@ private:
         }
         
         return output;
-    }
-    
-    // 使用 Windows DPAPI 加密
-    static std::string protectWithDPAPI(const std::string& plainText) {
-        DATA_BLOB inBlob;
-        inBlob.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plainText.data()));
-        inBlob.cbData = static_cast<DWORD>(plainText.size());
-        
-        DATA_BLOB outBlob;
-        ZeroMemory(&outBlob, sizeof(outBlob));
-        
-        if (!CryptProtectData(&inBlob, L"Open-Aries-AI", NULL, NULL, NULL, 0, &outBlob)) {
-            return "";
-        }
-        
-        std::string encrypted(reinterpret_cast<char*>(outBlob.pbData), outBlob.cbData);
-        std::string hex = stringToHex(encrypted);
-        LocalFree(outBlob.pbData);
-        return hex;
-    }
-    
-    // 使用 Windows DPAPI 解密
-    static std::string unprotectWithDPAPI(const std::string& hexCipherText) {
-        std::string encrypted = hexToString(hexCipherText);
-        if (encrypted.empty()) {
-            return "";
-        }
-        
-        DATA_BLOB inBlob;
-        inBlob.pbData = reinterpret_cast<BYTE*>(encrypted.data());
-        inBlob.cbData = static_cast<DWORD>(encrypted.size());
-        
-        DATA_BLOB outBlob;
-        ZeroMemory(&outBlob, sizeof(outBlob));
-        
-        if (!CryptUnprotectData(&inBlob, NULL, NULL, NULL, NULL, 0, &outBlob)) {
-            return "";
-        }
-        
-        std::string plain(reinterpret_cast<char*>(outBlob.pbData), outBlob.cbData);
-        LocalFree(outBlob.pbData);
-        return plain;
     }
 };
 

@@ -4,21 +4,28 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows-blue)](https://www.microsoft.com/windows)
 [![Language](https://img.shields.io/badge/Language-C%2B%2B17-orange)](https://isocpp.org/)
 
-Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。通过截图分析 + AI 决策 + 自动执行，实现自然语言控制电脑操作。
+Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。通过截图分析/控件树转述 + AI 决策 + 自动执行，实现自然语言控制电脑操作。
 
-**核心优势**: 支持智谱 AI 和自定义 OpenAI 兼容 API，一键切换不同厂商模型；支持中文输入和文件管理；完整的动作历史反馈机制。
+**核心优势**: 
+- 支持视觉模型和纯文本模型（可配置视觉模型转述）
+- 支持智谱 AI 和自定义 OpenAI 兼容 API，一键切换不同厂商模型
+- 完整的 UI Automation 控件操作和窗口管理
+- 支持中文输入和文件管理
+- 完整的动作历史反馈机制
 
 ## 🌟 核心功能
 
 | 功能 | 描述 |
 |------|------|
 | **🖼️ 视觉感知** | 自动截取屏幕，通过视觉模型分析当前界面状态 |
-| **🧠 智能决策** | AI 根据截图和用户指令，规划下一步操作 |
+| **📝 纯文本模式** | 不支持视觉的模型可通过控件列表或视觉模型转述理解界面 |
+| **🧠 智能决策** | AI 根据界面信息和用户指令，规划下一步操作 |
 | **🤖 自动执行** | 模拟鼠标点击、键盘输入、滑动等操作 |
 | **📱 应用管理** | 获取已安装应用列表，智能启动应用程序 |
 | **📁 文件管理** | 完整的文件操作：读取、写入、搜索、执行文件（支持Unicode路径） |
+| **🎮 UI Automation** | 获取控件树、点击控件、窗口操作（最小化/最大化/置顶等） |
 | **💻 命令执行** | 通过 PowerShell 执行系统命令 |
-| **🔒 安全存储** | 硬件绑定的 API Key 加密存储 |
+| **🔒 安全存储** | DPAPI + 硬件绑定的双重加密存储 |
 | **📝 中文支持** | 完美支持中文输入和文件路径 |
 | **📊 动作历史** | 完整的动作历史记录和反馈，避免重复操作 |
 | **🔄 智能总结** | 第5次迭代自动提示AI进行阶段性总结 |
@@ -31,7 +38,8 @@ Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。
 ├─────────────┬─────────────┬─────────────┬───────────────────────────┤
 │   视觉感知   │   AI 决策    │   动作执行   │        应用管理            │
 │ (Screenshot)│ (LLM API)   │  (Action    │      (AppManager)         │
-│             │             │   Executor) │                           │
+│   /控件树    │             │   Executor) │                           │
+│   转述      │             │             │                           │
 └─────────────┴─────────────┴─────────────┴───────────────────────────┘
        │              │              │              │
        ▼              ▼              ▼              ▼
@@ -44,6 +52,7 @@ Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。
 │  ├─ action_executor.hpp             (动作执行)                      │
 │  ├─ app_manager.hpp                 (应用管理)                      │
 │  ├─ file_manager.hpp                (文件管理器)                    │
+│  ├─ ui_automation.hpp               (UI Automation 控件操作)        │
 │  ├─ prompt_templates.hpp            (提示词模板)                    │
 │  └─ secure_storage.hpp              (安全存储)                      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -70,7 +79,16 @@ Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。
    - 或输入 `provider` 配置自定义 API 提供商
    - 或直接输入 API Key
 
-3. **输入任务目标**
+3. **选择模型类型**
+   - 程序会询问"该模型是否支持视觉（图像识别）?"
+   - 输入 `y` 使用视觉模式（截图上传）
+   - 输入 `n` 使用纯文本模式（控件列表/视觉转述）
+
+4. **纯文本模式可选配置**
+   - 如果选择纯文本模式，可配置视觉模型用于屏幕转述
+   - 或直接通过 UI Automation 控件列表理解界面
+
+5. **输入任务目标**
    ```
    用哔哩哔哩打开影视飓风的最新视频
    ```
@@ -100,6 +118,7 @@ aries_agent.exe
 | `clear` | 清除所有保存的 API Key |
 | `provider` | 切换 API 提供商（支持多提供商配置） |
 | `key` | 打开浏览器获取 API Key |
+| `update` | 检查程序更新 |
 
 ### 支持的动作类型
 
@@ -129,7 +148,7 @@ aries_agent.exe
 
 | 动作 | 说明 | 示例 |
 |------|------|------|
-| `FileList` | 列出目录内容 | `do(action="FileList", path="C:\\Users")` |
+| `FileList` | 列出目录内容 | `do(action="FileList", path="C:\Users")` |
 | `FileRead` | 读取文件内容 | `do(action="FileRead", path="test.txt")` |
 | `FileHead` | 读取文件前N行 | `do(action="FileHead", path="log.txt", lines=50)` |
 | `FileTail` | 读取文件后N行 | `do(action="FileTail", path="log.txt", lines=50)` |
@@ -145,13 +164,32 @@ aries_agent.exe
 | `FileTree` | 获取目录树 | `do(action="FileTree", path=".", depth=3)` |
 | `FileRun` | 执行可执行文件 | `do(action="FileRun", path="app.exe")` |
 
+#### UI Automation 控件操作
+
+| 动作 | 说明 | 示例 |
+|------|------|------|
+| `UIA_ListWindows` | 列出所有顶层窗口 | `do(action="UIA_ListWindows")` |
+| `UIA_GetWindowTree` | 获取窗口控件树 | `do(action="UIA_GetWindowTree", window="记事本", depth=3)` |
+| `UIA_GetActiveTree` | 获取活动窗口控件树 | `do(action="UIA_GetActiveTree", depth=3)` |
+| `UIA_GetControlAtCursor` | 获取鼠标位置控件 | `do(action="UIA_GetControlAtCursor")` |
+| `UIA_GetControlAtPoint` | 获取指定位置控件 | `do(action="UIA_GetControlAtPoint", x=100, y=200)` |
+| `UIA_ClickControl` | 通过名称点击控件 | `do(action="UIA_ClickControl", window="记事本", control="保存")` |
+
+#### 窗口操作
+
+| 动作 | 说明 | 示例 |
+|------|------|------|
+| `Window_Minimize` | 最小化窗口 | `do(action="Window_Minimize", window="记事本")` |
+| `Window_Maximize` | 最大化窗口 | `do(action="Window_Maximize", window="记事本")` |
+| `Window_Restore` | 还原窗口 | `do(action="Window_Restore", window="记事本")` |
+| `Window_Close` | 关闭窗口 | `do(action="Window_Close", window="记事本")` |
+| `Window_Activate` | 激活窗口 | `do(action="Window_Activate", window="记事本")` |
+| `Window_Topmost` | 窗口置顶 | `do(action="Window_Topmost", window="记事本", topmost=true)` |
+| `Window_Move` | 移动窗口 | `do(action="Window_Move", window="记事本", x=100, y=100, width=800, height=600)` |
+| `Window_GetRect` | 获取窗口位置 | `do(action="Window_GetRect", window="记事本")` |
+| `Window_GetState` | 获取窗口状态 | `do(action="Window_GetState", window="记事本")` |
+
 ## ⚙️ 配置说明
-
-### 安全能力开关（新增）
-
-程序启动后会提示是否开启高危能力，默认全部关闭：`Execute`、`FileWrite/FileAppend`、`FileDelete`、`FileRun`。  
-且高危动作会进行二次确认（输入 `y` 才执行）。  
-详细开发说明请见：`docs/SECURITY_DEVELOPMENT.md`。
 
 ### 智谱 AI (默认)
 
@@ -165,12 +203,21 @@ aries_agent.exe
 支持任何 OpenAI 兼容的 API：
 
 1. 在输入 API Key 时输入 `provider`
-2. 选择或添加自定义提供商
+2. 选择或添加自定义提供商（支持添加新提供商）
 3. 输入 API Base URL（如 `https://api.siliconflow.cn/v1`）
 4. 输入模型名称（如 `zai-org/GLM-4.6V`）
 5. 输入 API Key
 
 **支持多提供商配置**: 可以保存多个自定义 API 配置，随时切换使用。
+
+### 纯文本模型 + 视觉转述
+
+对于不支持视觉的纯文本模型（如 GPT-3.5）：
+
+1. 选择纯文本模式（`n`）
+2. 配置视觉模型用于屏幕转述（如智谱 AI 的 glm-4v-flash）
+3. 程序会截图并使用视觉模型生成界面描述
+4. 纯文本模型根据描述做出决策
 
 ## 📁 文件结构
 
@@ -187,61 +234,68 @@ Open-Aries-AI/
 ├── action_executor.hpp      # 动作执行器
 ├── app_manager.hpp          # 应用管理器
 ├── file_manager.hpp         # 文件管理器
+├── ui_automation.hpp        # UI Automation 控件操作
 ├── prompt_templates.hpp     # AI 提示词模板
 ├── secure_storage.hpp       # API Key 安全存储
+├── update_checker.hpp       # 更新检查器
 │
 └── .api_key_*_secure        # 加密的 API Key 存储文件
 ```
 
 ## 🔧 编译指南
 
-### CMake 构建
-
-```bash
-cmake -S . -B build -G "MinGW Makefiles"
-cmake --build build --config Release
-```
-
 ### 使用 MinGW-w64
 
 ```bash
-g++ -std=c++17 aries_agent.cpp -o aries_agent.exe ^
-    -lgdiplus -lgdi32 -lws2_32 -lcrypt32 -lwininet
+g++ -std=c++17 -O2 -o aries_agent.exe aries_agent.cpp \
+    -lgdiplus -lgdi32 -lwininet -lws2_32 -lcrypt32 \
+    -luiautomationcore -lole32 -loleaut32
 ```
 
 ### 使用 Visual Studio
 
 ```bash
-cl /std:c++17 /EHsc aries_agent.cpp ^
-    gdiplus.lib gdi32.lib ws2_32.lib crypt32.lib wininet.lib
+cl /std:c++17 /EHsc /O2 aries_agent.cpp \
+    gdiplus.lib gdi32.lib wininet.lib ws2_32.lib crypt32.lib \
+    uiautomationcore.lib ole32.lib oleaut32.lib
 ```
 
 ### 依赖库
 
 - `gdiplus` - GDI+ (截图)
 - `gdi32` - Windows GDI
-- `ws2_32` - Winsock (网络)
-- `crypt32` - 加密 API
 - `wininet` - WinINet (HTTP 请求)
+- `ws2_32` - Winsock (网络)
+- `crypt32` - 加密 API (DPAPI)
+- `uiautomationcore` - UI Automation (控件树获取)
+- `ole32` - COM 基础库
+- `oleaut32` - COM 自动化库
 
 ## 🎯 工作流程
 
+### 视觉模式
 ```
 用户输入 → 屏幕截图 → AI 分析 → 动作解析 → 动作执行 → 结果反馈
                 ↑___________________________________________↓
 ```
 
-1. **屏幕捕获** - 使用 Windows GDI+ 截取全屏
-2. **AI 分析** - 将截图和用户指令发送给 AI
+### 纯文本模式
+```
+用户输入 → 获取控件列表/视觉转述 → AI 分析 → 动作解析 → 动作执行 → 结果反馈
+                        ↑___________________________________________↓
+```
+
+1. **界面理解** - 视觉模式截图上传，纯文本模式获取控件列表或视觉转述
+2. **AI 分析** - 将界面信息和用户指令发送给 AI
 3. **动作解析** - 解析 AI 返回的动作指令
-4. **动作执行** - 执行点击、输入、启动应用等操作
+4. **动作执行** - 执行点击、输入、启动应用、窗口操作等
 5. **动作历史反馈** - 将所有动作和思考过程反馈给 AI，避免重复操作
 6. **智能总结** - 第5次迭代时自动提示AI进行阶段性总结
 7. **循环迭代** - 根据执行结果继续下一步操作
 
 ## 🔐 安全特性
 
-- **硬件绑定加密**: API Key 使用 CPU + 硬盘 + 主板序列号加密
+- **双重加密**: API Key 使用 DPAPI + 硬件绑定（CPU + 硬盘 + 主板序列号）双重加密
 - **安全输入**: 输入 API Key 时显示星号
 - **本地存储**: 密钥本地加密存储，不上传云端
 
@@ -257,7 +311,7 @@ A: 检查网络连接，或尝试使用 `provider` 命令切换其他 API 提供
 A: 某些 UWP 应用可能需要特殊处理，程序会自动尝试多种启动方式。
 
 **Q: 点击坐标不准确？**
-A: 程序使用相对坐标 (0-1000) 自动适配屏幕分辨率。
+A: 程序使用实际像素坐标，AI 会根据屏幕分辨率自动适配。
 
 **Q: 遇到"访问量过大"错误？**
 A: 程序会提示是否重试，选择 `y` 等待 1 秒后自动重试。
@@ -268,9 +322,23 @@ A: 程序已支持中文输入，请确保使用的是最新版本。
 **Q: 文件读取失败？**
 A: 程序会显示具体错误原因（文件不存在/无权限/被占用等），AI会根据错误信息调整策略。
 
+**Q: 视觉模型转述失败？**
+A: 程序会自动回退到控件列表模式，并记录详细错误信息到日志。
+
 ## 📝 更新日志
 
-### v1.2 (当前版本)
+### v1.2.1 (当前版本)
+- ✅ 支持视觉模型和纯文本模型（用户自主选择）
+- ✅ 纯文本模型可配置视觉模型进行屏幕转述
+- ✅ 添加 UI Automation 控件操作（控件树获取、点击控件）
+- ✅ 添加窗口操作（最小化、最大化、置顶、移动等）
+- ✅ 统一提供商选择界面（支持添加新提供商）
+- ✅ 修复视觉模型错误信息丢失问题
+- ✅ 修复 UI Automation COM 初始化问题（使用 `_variant_t`）
+- ✅ 修复 MinGW 编译链接问题（添加 `-luuid`）
+- ✅ 更新安全存储为 DPAPI + 硬件绑定双重加密
+
+### v1.2
 - ✅ 完整的动作历史记录（保存所有历史，显示最近5次）
 - ✅ 第5次迭代自动提示AI进行阶段性总结
 - ✅ 文件操作详细的错误原因判断（不存在/无权限/被占用等）
