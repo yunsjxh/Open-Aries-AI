@@ -9,6 +9,7 @@
 #include "file_manager.hpp"
 #include "update_checker.hpp"
 #include "ui_automation.hpp"
+#include "mcp_client.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <windows.h>
@@ -23,7 +24,7 @@
 using namespace aries;
 
 const std::string LOG_FILE = "aries_agent.log";
-const std::string CURRENT_VERSION = "v1.2.1";
+const std::string CURRENT_VERSION = "v1.2.2";
 const std::string GITHUB_REPO = "https://github.com/yunsjxh/Open-Aries-AI/releases";
 
 std::string getCurrentTime() {
@@ -958,10 +959,10 @@ int main(int argc, char* argv[]) {
     // 外层循环 - 支持返回首页
     bool returnToHome = true;
     while (returnToHome) {
-        returnToHome = false;  // 默认不返回首页，除非用户选择
+        returnToHome = true;  // 保持循环运行
         
         std::cout << std::endl;
-        std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商, 'update' 检查更新): ";
+        std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商, 'mcp' 连接MCP服务器, 'update' 检查更新): ";
         std::string user_goal;
         std::getline(std::cin, user_goal);
         
@@ -969,6 +970,8 @@ int main(int argc, char* argv[]) {
         
         if (user_goal == "quit" || user_goal == "exit") {
             logMessage("用户退出");
+            // 断开所有 MCP 服务器
+            mcp::MCPClientManager::getInstance().disconnectAll();
             return 0;
         }
         
@@ -977,7 +980,98 @@ int main(int argc, char* argv[]) {
             std::cout << std::endl;
             std::cout << "按任意键继续..." << std::endl;
             _getch();
-            // 继续外层循环，返回首页
+            continue;
+        }
+        
+        if (user_goal == "mcp") {
+            while (true) {
+                std::cout << "\n=== MCP 服务器管理 ===" << std::endl;
+                std::cout << "1. 连接新服务器 (stdio)" << std::endl;
+                std::cout << "2. 连接 HTTP 服务器" << std::endl;
+                std::cout << "3. 列出已连接服务器" << std::endl;
+                std::cout << "4. 列出可用工具" << std::endl;
+                std::cout << "5. 断开所有服务器" << std::endl;
+                std::cout << "6. 返回主菜单" << std::endl;
+                std::cout << "请选择: ";
+                
+                char mcpChoice;
+                std::cin >> mcpChoice;
+                std::cin.ignore();
+                
+                if (mcpChoice == '1') {
+                    std::cout << "\n输入服务器名称: ";
+                    std::string serverName;
+                    std::getline(std::cin, serverName);
+                    
+                    std::cout << "输入启动命令 (如 npx -y @modelcontextprotocol/server-filesystem): ";
+                    std::string command;
+                    std::getline(std::cin, command);
+                    
+                    std::cout << "输入参数 (可选): ";
+                    std::string args;
+                    std::getline(std::cin, args);
+                    
+                    std::cout << "正在连接 MCP 服务器..." << std::endl;
+                    
+                    auto& mcpManager = mcp::MCPClientManager::getInstance();
+                    if (mcpManager.connectServer(serverName, command, args)) {
+                        std::cout << "连接成功!" << std::endl;
+                        std::cout << "服务器: " << mcpManager.getServerInfo(serverName) << std::endl;
+                        auto client = mcpManager.getClient(serverName);
+                        if (client) {
+                            std::cout << "可用工具数量: " << client->getTools().size() << std::endl;
+                        }
+                        logMessage("MCP 服务器连接成功: " + serverName);
+                    } else {
+                        std::cout << "连接失败: " << mcpManager.getLastError() << std::endl;
+                        logMessage("MCP 服务器连接失败: " + serverName + " - " + mcpManager.getLastError());
+                    }
+                } else if (mcpChoice == '2') {
+                    std::cout << "\n输入服务器名称: ";
+                    std::string serverName;
+                    std::getline(std::cin, serverName);
+                    
+                    std::cout << "输入 HTTP URL (如 https://mcp.example.com/mcp): ";
+                    std::string url;
+                    std::getline(std::cin, url);
+                    
+                    std::cout << "正在连接 HTTP MCP 服务器..." << std::endl;
+                    
+                    auto& mcpManager = mcp::MCPClientManager::getInstance();
+                    if (mcpManager.connectHttpServer(serverName, url)) {
+                        std::cout << "连接成功!" << std::endl;
+                        std::cout << "服务器: " << mcpManager.getServerInfo(serverName) << std::endl;
+                        auto client = mcpManager.getHttpClient(serverName);
+                        if (client) {
+                            std::cout << "可用工具数量: " << client->getTools().size() << std::endl;
+                        }
+                        logMessage("HTTP MCP 服务器连接成功: " + serverName);
+                    } else {
+                        std::cout << "连接失败: " << mcpManager.getLastError() << std::endl;
+                        logMessage("HTTP MCP 服务器连接失败: " + serverName + " - " + mcpManager.getLastError());
+                    }
+                } else if (mcpChoice == '3') {
+                    auto& mcpManager = mcp::MCPClientManager::getInstance();
+                    auto names = mcpManager.getClientNames();
+                    if (names.empty()) {
+                        std::cout << "没有已连接的服务器" << std::endl;
+                    } else {
+                        std::cout << "\n已连接的服务器:" << std::endl;
+                        for (const auto& name : names) {
+                            std::cout << "  - " << name << " (" << mcpManager.getServerInfo(name) << ")" << std::endl;
+                        }
+                    }
+                } else if (mcpChoice == '4') {
+                    auto& mcpManager = mcp::MCPClientManager::getInstance();
+                    std::cout << mcpManager.getAllToolsDescription() << std::endl;
+                } else if (mcpChoice == '5') {
+                    mcp::MCPClientManager::getInstance().disconnectAll();
+                    std::cout << "已断开所有 MCP 服务器" << std::endl;
+                    logMessage("断开所有 MCP 服务器");
+                } else if (mcpChoice == '6') {
+                    break;
+                }
+            }
             continue;
         }
         
@@ -1108,6 +1202,18 @@ int main(int argc, char* argv[]) {
             logMessage("屏幕已保存");
             
             system_prompt = PromptTemplates::buildSystemPrompt(screenWidth, screenHeight, false);
+            
+            // 添加 MCP 服务器信息
+            {
+                auto& mcpMgr = mcp::MCPClientManager::getInstance();
+                auto servers = mcpMgr.getClientNames();
+                if (!servers.empty()) {
+                    system_prompt += "\n\n【已连接的 MCP 服务器】\n";
+                    system_prompt += mcpMgr.getAllToolsDescription();
+                    system_prompt += "\n你可以使用 MCP_Tool 动作调用这些工具。例如：\n";
+                    system_prompt += "do(action=\"MCP_Tool\", server=\"服务器名\", tool=\"工具名\", args=\"{\\\"参数\\\":\\\"值\\\"}\", desc=\"描述\")\n";
+                }
+            }
         } else {
             // 纯文本模型：可以使用视觉模型转述，或直接使用控件列表
             if (visionProvider) {
@@ -1134,12 +1240,38 @@ int main(int argc, char* argv[]) {
                     std::cout << "回退到控件列表模式..." << std::endl;
                     std::string controlList = getControlListDescription();
                     system_prompt = PromptTemplates::buildTextModeSystemPrompt();
+                    
+                    // 添加 MCP 服务器信息
+                    {
+                        auto& mcpMgr = mcp::MCPClientManager::getInstance();
+                        auto servers = mcpMgr.getClientNames();
+                        if (!servers.empty()) {
+                            system_prompt += "\n\n【已连接的 MCP 服务器】\n";
+                            system_prompt += mcpMgr.getAllToolsDescription();
+                            system_prompt += "\n你可以使用 MCP_Tool 动作调用这些工具。例如：\n";
+                            system_prompt += "do(action=\"MCP_Tool\", server=\"服务器名\", tool=\"工具名\", args=\"{\\\"参数\\\":\\\"值\\\"}\", desc=\"描述\")\n";
+                        }
+                    }
+                    
                     user_message += "\n\n【当前屏幕控件信息】\n";
                     user_message += controlList;
                 } else {
                     std::cout << "视觉模型转述完成" << std::endl;
                     logMessage("视觉模型转述完成");
                     system_prompt = PromptTemplates::buildTextModeSystemPrompt();
+                    
+                    // 添加 MCP 服务器信息
+                    {
+                        auto& mcpMgr = mcp::MCPClientManager::getInstance();
+                        auto servers = mcpMgr.getClientNames();
+                        if (!servers.empty()) {
+                            system_prompt += "\n\n【已连接的 MCP 服务器】\n";
+                            system_prompt += mcpMgr.getAllToolsDescription();
+                            system_prompt += "\n你可以使用 MCP_Tool 动作调用这些工具。例如：\n";
+                            system_prompt += "do(action=\"MCP_Tool\", server=\"服务器名\", tool=\"工具名\", args=\"{\\\"参数\\\":\\\"值\\\"}\", desc=\"描述\")\n";
+                        }
+                    }
+                    
                     user_message += "\n\n【屏幕内容描述（由视觉模型生成）】\n";
                     user_message += visualDesc;
                 }
@@ -1154,6 +1286,16 @@ int main(int argc, char* argv[]) {
                 
                 // 构建纯文本模式的系统提示词
                 system_prompt = PromptTemplates::buildTextModeSystemPrompt();
+                
+                // 添加 MCP 服务器信息
+                auto& mcpManager = mcp::MCPClientManager::getInstance();
+                auto mcpServers = mcpManager.getClientNames();
+                if (!mcpServers.empty()) {
+                    system_prompt += "\n\n【已连接的 MCP 服务器】\n";
+                    system_prompt += mcpManager.getAllToolsDescription();
+                    system_prompt += "\n你可以使用 MCP_Tool 动作调用这些工具。例如：\n";
+                    system_prompt += "do(action=\"MCP_Tool\", server=\"服务器名\", tool=\"工具名\", args=\"{\\\"参数\\\":\\\"值\\\"}\", desc=\"描述\")\n";
+                }
                 
                 user_message += "\n\n【当前屏幕控件信息】\n";
                 user_message += controlList;

@@ -273,16 +273,37 @@ private:
             
             std::string value;
             if (actionStr[valStart] == '"') {
-                // 双引号字符串
-                size_t valEnd = actionStr.find('"', valStart + 1);
-                if (valEnd == std::string::npos) {
-                    // 未找到结束引号，取到字符串末尾或右括号（不是逗号，因为值内部可能有逗号）
-                    valEnd = actionStr.find(')', valStart + 1);
-                    if (valEnd == std::string::npos) valEnd = actionStr.length();
-                    value = actionStr.substr(valStart + 1, valEnd - valStart - 1);
-                } else {
-                    value = actionStr.substr(valStart + 1, valEnd - valStart - 1);
+                // 双引号字符串 - 需要处理转义字符
+                size_t valEnd = valStart + 1;
+                while (valEnd < actionStr.length()) {
+                    if (actionStr[valEnd] == '\\' && valEnd + 1 < actionStr.length()) {
+                        valEnd += 2;  // 跳过转义字符
+                    } else if (actionStr[valEnd] == '"') {
+                        break;  // 找到结束引号
+                    } else {
+                        valEnd++;
+                    }
                 }
+                if (valEnd >= actionStr.length()) {
+                    valEnd = actionStr.length();
+                }
+                value = actionStr.substr(valStart + 1, valEnd - valStart - 1);
+                // 处理转义序列
+                std::string unescaped;
+                for (size_t i = 0; i < value.length(); i++) {
+                    if (value[i] == '\\' && i + 1 < value.length()) {
+                        char next = value[i + 1];
+                        if (next == '"') { unescaped += '"'; i++; }
+                        else if (next == '\\') { unescaped += '\\'; i++; }
+                        else if (next == 'n') { unescaped += '\n'; i++; }
+                        else if (next == 'r') { unescaped += '\r'; i++; }
+                        else if (next == 't') { unescaped += '\t'; i++; }
+                        else { unescaped += value[i]; }
+                    } else {
+                        unescaped += value[i];
+                    }
+                }
+                value = unescaped;
                 pos = valEnd + 1;
             } else if (actionStr[valStart] == '\'') {
                 // 单引号字符串
