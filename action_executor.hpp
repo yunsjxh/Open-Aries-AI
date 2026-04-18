@@ -4,6 +4,7 @@
 #include "file_manager.hpp"
 #include "app_manager.hpp"
 #include "ui_automation.hpp"
+#include "mcp_client.hpp"
 #include <windows.h>
 #include <iostream>
 #include <functional>
@@ -158,6 +159,10 @@ public:
             return executeWindowGetRect(action);
         } else if (iequals(action.action, "Window_GetState")) {
             return executeWindowGetState(action);
+        
+        // MCP 工具调用
+        } else if (iequals(action.action, "MCP_Tool")) {
+            return executeMCPTool(action);
         } else {
             return ExecutionResult(false, "未知的动作类型: " + action.action);
         }
@@ -1494,6 +1499,49 @@ private:
         UIAutomationTool uiaTool;
         std::string result = uiaTool.getWindowState(windowTitle);
         return ExecutionResult(true, result);
+    }
+    
+    // ==================== MCP 工具执行函数 ====================
+    
+    ExecutionResult executeMCPTool(const ParsedAgentAction& action) {
+        auto serverIt = action.fields.find("server");
+        auto toolIt = action.fields.find("tool");
+        auto argsIt = action.fields.find("args");
+        
+        if (serverIt == action.fields.end()) {
+            return ExecutionResult(false, "MCP_Tool 缺少 server 参数");
+        }
+        
+        if (toolIt == action.fields.end()) {
+            return ExecutionResult(false, "MCP_Tool 缺少 tool 参数");
+        }
+        
+        std::string serverName = serverIt->second;
+        std::string toolName = toolIt->second;
+        std::string args = (argsIt != action.fields.end()) ? argsIt->second : "{}";
+        
+        // 获取 MCP 客户端（先尝试 stdio，再尝试 HTTP）
+        auto& manager = mcp::MCPClientManager::getInstance();
+        auto client = manager.getClient(serverName);
+        auto httpClient = manager.getHttpClient(serverName);
+        
+        if (!client && !httpClient) {
+            return ExecutionResult(false, "MCP 服务器未连接: " + serverName);
+        }
+        
+        // 调用工具
+        std::pair<bool, std::string> result;
+        if (client) {
+            result = client->callTool(toolName, args);
+        } else {
+            result = httpClient->callTool(toolName, args);
+        }
+        
+        if (result.first) {
+            return ExecutionResult(true, "MCP 工具调用成功: " + toolName + "\n结果: " + result.second);
+        } else {
+            return ExecutionResult(false, "MCP 工具调用失败: " + toolName + " - " + result.second);
+        }
     }
 };
 

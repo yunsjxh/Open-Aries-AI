@@ -103,6 +103,11 @@ UI Automation 使用建议：
 - 获取窗口位置: do(action="Window_GetRect", window="窗口标题", desc="获取窗口位置") - 返回窗口位置和大小
 - 获取窗口状态: do(action="Window_GetState", window="窗口标题", desc="获取窗口状态") - 返回最小化/最大化/正常状态
 
+MCP 工具调用（连接外部 MCP 服务器后可用）：
+- 调用 MCP 工具: do(action="MCP_Tool", server="服务器名", tool="工具名", args="{\"参数\":\"值\"}", desc="调用MCP工具")
+- 示例: do(action="MCP_Tool", server="filesystem", tool="read_file", args="{\"path\":\"/path/to/file\"}", desc="读取文件")
+- 使用前需先通过 'mcp' 命令连接 MCP 服务器
+
 执行策略（重要）：
 1. 启动应用时，系统会优先查找已安装应用列表并直接启动
 2. 如果需要查看可启动的应用，先返回 Installed 动作获取列表
