@@ -541,6 +541,51 @@ private:
 
         log("执行操作: 启动应用 \"" + app + "\"");
 
+        // 获取已安装应用列表
+        auto installedApps = AppManager::getInstalledApps();
+        InstalledApp* foundApp = AppManager::findApp(installedApps, app);
+        
+        if (foundApp) {
+            log("找到应用: " + foundApp->displayName);
+            log("  executablePath: " + foundApp->executablePath);
+            log("  installLocation: " + foundApp->installLocation);
+            
+            // 检查 executablePath 是否是 .ico 文件
+            if (!foundApp->executablePath.empty() && foundApp->executablePath.find(".ico") != std::string::npos) {
+                log("检测到图标文件，获取可执行文件列表");
+                
+                if (!foundApp->uninstallString.empty()) {
+                    std::string installDir = AppManager::extractDirectoryFromPath(foundApp->uninstallString);
+                    if (!installDir.empty()) {
+                        auto exeList = AppManager::getAllExecutablesInDirectory(installDir);
+                        if (!exeList.empty()) {
+                            log("找到 " + std::to_string(exeList.size()) + " 个可执行文件");
+                            
+                            std::ostringstream oss;
+                            oss << "应用 '" << foundApp->displayName << "' 的 executablePath 是图标文件。\n";
+                            oss << "安装目录下有多个可执行文件，请判断应该启动哪个:\n";
+                            for (size_t i = 0; i < exeList.size(); i++) {
+                                oss << (i + 1) << ". " << exeList[i].first << "\n";
+                                oss << "   路径: \"" << exeList[i].second << "\"\n";
+                            }
+                            oss << "\n请使用 FileRun 动作启动主程序，例如: do(action=\"FileRun\", path=\"完整路径\", desc=\"启动程序\")";
+                            
+                            return ExecutionResult(false, oss.str());
+                        }
+                    }
+                }
+            }
+            
+            // 直接启动应用
+            if (AppManager::launchApp(*foundApp)) {
+                return ExecutionResult(true, "成功启动应用: " + foundApp->displayName);
+            } else {
+                log("应用管理器启动失败，尝试其他方法");
+            }
+        } else {
+            log("未在已安装应用列表中找到: " + app);
+        }
+
         // 应用名称映射（中文名称 -> 实际命令）
         std::map<std::string, std::string> appMapping = {
             {"任务管理器", "taskmgr"},
@@ -552,12 +597,11 @@ private:
             {"资源管理器", "explorer"},
             {"控制面板", "control"},
             {"设置", "ms-settings:"},
-            {"浏览器", "start msedge"},
-            {"edge", "start msedge"},
-            {"chrome", "start chrome"}
+            {"浏览器", "msedge"},
+            {"edge", "msedge"},
+            {"chrome", "chrome"}
         };
 
-        // 查找映射，如果没有映射则使用原名称
         std::string actualCommand = app;
         auto it = appMapping.find(app);
         if (it != appMapping.end()) {
@@ -565,43 +609,32 @@ private:
             log("应用名称映射: " + app + " -> " + actualCommand);
         }
 
-        // 优先使用 PowerShell 执行
-        std::string psCommand = "Start-Process " + actualCommand;
+        // 使用 PowerShell 执行
+        std::string psCommand = "Start-Process \"" + actualCommand + "\"";
         if (executePowerShellCommand(psCommand)) {
             return ExecutionResult(true, "通过 PowerShell 启动应用: " + app);
         }
 
-        // 如果 PowerShell 失败，回退到 Win+R 方法
+        // 回退到 Win+R 方法
         log("PowerShell 执行失败，回退到 Win+R 方法");
         
-        // 使用 Win+R 打开运行对话框，然后输入应用名称
-        // 模拟 Win+R
         INPUT inputs[4] = {};
-        
         inputs[0].type = INPUT_KEYBOARD;
         inputs[0].ki.wVk = VK_LWIN;
-        
         inputs[1].type = INPUT_KEYBOARD;
         inputs[1].ki.wVk = 'R';
-        
         inputs[2].type = INPUT_KEYBOARD;
         inputs[2].ki.wVk = 'R';
         inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-        
         inputs[3].type = INPUT_KEYBOARD;
         inputs[3].ki.wVk = VK_LWIN;
         inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-        
         SendInput(4, inputs, sizeof(INPUT));
         
-        Sleep(500); // 等待运行对话框打开
-        
-        // 输入应用名称
+        Sleep(500);
         simulateKeyboardInput(actualCommand);
-        
         Sleep(100);
         
-        // 按回车键
         INPUT enterInput[2] = {};
         enterInput[0].type = INPUT_KEYBOARD;
         enterInput[0].ki.wVk = VK_RETURN;
@@ -610,7 +643,7 @@ private:
         enterInput[1].ki.dwFlags = KEYEVENTF_KEYUP;
         SendInput(2, enterInput, sizeof(INPUT));
         
-        return ExecutionResult(true, "启动应用: " + app);
+        return ExecutionResult(true, "通过 Win+R 启动应用: " + app);
     }
 
     // 执行 PowerShell 命令并捕获输出

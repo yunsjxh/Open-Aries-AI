@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <iostream>
 #include <memory>
 
 #pragma comment(lib, "wininet.lib")
@@ -438,17 +439,47 @@ private:
         if (response.find("\"error\"") != std::string::npos) {
             size_t msgPos = response.find("\"message\":\"");
             if (msgPos != std::string::npos) {
-                size_t start = msgPos + 11;
-                size_t end = response.find("\"", start);
-                lastError_ = response.substr(start, end - start);
+                lastError_ = extractJsonString(response, msgPos + 10);
             } else {
                 lastError_ = "API error";
             }
             return {false, ""};
         }
         
+        // 检查 SiliconFlow 等平台的错误格式 {"code":xxx,"message":"xxx","data":null}
+        if (response.find("\"code\":") != std::string::npos && response.find("\"message\":") != std::string::npos) {
+            size_t codePos = response.find("\"code\":");
+            size_t msgPos = response.find("\"message\":");
+            if (codePos != std::string::npos && msgPos != std::string::npos) {
+                // 检查 code 是否为错误码（非0）
+                size_t codeStart = codePos + 7;
+                while (codeStart < response.length() && (response[codeStart] == ' ' || response[codeStart] == '\t')) {
+                    codeStart++;
+                }
+                if (codeStart < response.length()) {
+                    int code = 0;
+                    while (codeStart < response.length() && response[codeStart] >= '0' && response[codeStart] <= '9') {
+                        code = code * 10 + (response[codeStart] - '0');
+                        codeStart++;
+                    }
+                    if (code != 0) {
+                        size_t msgStart = response.find("\"", msgPos + 10);
+                        if (msgStart != std::string::npos) {
+                            lastError_ = extractJsonString(response, msgStart);
+                        } else {
+                            lastError_ = "API error (code: " + std::to_string(code) + ")";
+                        }
+                        return {false, ""};
+                    }
+                }
+            }
+        }
+        
         std::string content = parseContent(response);
         if (content.empty()) {
+            // 调试输出：记录原始响应的前 500 字符
+            std::cerr << "[调试] API 响应解析失败，原始响应: " 
+                      << response.substr(0, 500) << (response.length() > 500 ? "..." : "") << std::endl;
             lastError_ = "Invalid response format";
             return {false, ""};
         }

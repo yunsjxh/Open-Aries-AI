@@ -24,7 +24,7 @@
 using namespace aries;
 
 const std::string LOG_FILE = "aries_agent.log";
-const std::string CURRENT_VERSION = "v1.2.2";
+const std::string CURRENT_VERSION = "v1.3";
 const std::string GITHUB_REPO = "https://github.com/yunsjxh/Open-Aries-AI/releases";
 
 std::string getCurrentTime() {
@@ -136,40 +136,78 @@ void checkForUpdates(bool autoUpdate = false) {
             std::cout << std::endl;
         }
         
-        // 询问是否自动更新
         if (!autoUpdate) {
-            std::cout << "是否自动下载并安装更新? (y/n): ";
-            char choice;
+            std::cout << std::endl;
+            std::cout << "请选择要下载的版本:" << std::endl;
+            std::cout << "  1. 命令行版本 (aries_agent.exe)" << std::endl;
+            std::cout << "  2. Web GUI版本 (aries_web.exe)" << std::endl;
+            std::cout << "  3. 两个都下载" << std::endl;
+            std::cout << "  0. 取消" << std::endl;
+            std::cout << "请选择 (0-3): ";
+            
+            int choice;
             std::cin >> choice;
             std::cin.ignore();
             
-            if (choice == 'y' || choice == 'Y') {
-                autoUpdate = true;
+            if (choice == 0) {
+                std::cout << "已取消更新" << std::endl;
+                return;
             }
-        }
-        
-        if (autoUpdate) {
-            std::cout << std::endl;
-            std::cout << "开始自动更新..." << std::endl;
-            logMessage("开始自动更新...");
             
-            // 获取当前exe路径
             char exePath[MAX_PATH];
             GetModuleFileNameA(NULL, exePath, MAX_PATH);
+            std::string exeDir = std::string(exePath);
+            size_t lastSlash = exeDir.find_last_of("\\/");
+            if (lastSlash != std::string::npos) {
+                exeDir = exeDir.substr(0, lastSlash);
+            }
             
-            // 执行更新
-            if (UpdateChecker::performUpdate(GITHUB_REPO, exePath)) {
-                std::cout << "更新程序已启动，本程序将退出..." << std::endl;
-                logMessage("更新程序已启动");
+            bool success = true;
+            
+            if (choice == 1 || choice == 3) {
+                std::string agentPath = exeDir + "\\aries_agent.exe.new";
+                std::cout << std::endl << "正在下载命令行版本..." << std::endl;
+                if (UpdateChecker::downloadSpecificFile(GITHUB_REPO, "aries_agent.exe", agentPath)) {
+                    std::cout << "命令行版本下载完成: " << agentPath << std::endl;
+                } else {
+                    std::cerr << "命令行版本下载失败" << std::endl;
+                    success = false;
+                }
+            }
+            
+            if (choice == 2 || choice == 3) {
+                std::string webPath = exeDir + "\\aries_web.exe.new";
+                std::cout << std::endl << "正在下载Web GUI版本..." << std::endl;
+                if (UpdateChecker::downloadSpecificFile(GITHUB_REPO, "aries_web.exe", webPath)) {
+                    std::cout << "Web GUI版本下载完成: " << webPath << std::endl;
+                } else {
+                    std::cerr << "Web GUI版本下载失败" << std::endl;
+                    success = false;
+                }
+            }
+            
+            if (success && (choice == 1 || choice == 3)) {
+                std::cout << std::endl;
+                std::cout << "下载完成！" << std::endl;
+                std::cout << "新版本文件已保存为 .new 后缀，请手动替换原文件。" << std::endl;
+                std::cout << "或输入 'y' 自动替换命令行版本并重启: ";
+                char replace;
+                std::cin >> replace;
+                std::cin.ignore();
                 
-                // 等待一下让用户看到消息
-                Sleep(2000);
-                
-                // 退出程序，让更新脚本完成替换
-                exit(0);
-            } else {
-                std::cerr << "自动更新失败" << std::endl;
-                logMessage("自动更新失败");
+                if (replace == 'y' || replace == 'Y') {
+                    std::string agentPath = exeDir + "\\aries_agent.exe.new";
+                    if (UpdateChecker::performUpdate(GITHUB_REPO, exePath)) {
+                        std::cout << "更新程序已启动，本程序将退出..." << std::endl;
+                        logMessage("更新程序已启动");
+                        Sleep(2000);
+                        exit(0);
+                    } else {
+                        std::cerr << "自动替换失败，请手动替换文件" << std::endl;
+                    }
+                }
+            } else if (success) {
+                std::cout << std::endl << "下载完成！请手动替换原文件。" << std::endl;
             }
         }
     } else if (compareResult == 0) {
@@ -782,7 +820,26 @@ int main(int argc, char* argv[]) {
     std::cout << "  Open-Aries-AI - Windows 智能自动化助手  版本 " << CURRENT_VERSION << std::endl;
     std::cout << std::endl;
     
-    // 检查更新
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string exeDir = std::string(exePath);
+    size_t lastSlash = exeDir.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+        exeDir = exeDir.substr(0, lastSlash);
+    }
+    
+    std::string webExePath = exeDir + "\\aries_web.exe";
+    std::ifstream webExeCheck(webExePath);
+    if (!webExeCheck.good()) {
+        std::cout << "========================================" << std::endl;
+        std::cout << "【提示】v1.3 新增 Web GUI 版本！" << std::endl;
+        std::cout << "输入 'update' 可下载 aries_web.exe" << std::endl;
+        std::cout << "或访问: " << GITHUB_REPO << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << std::endl;
+    }
+    webExeCheck.close();
+    
     checkForUpdates();
     std::cout << std::endl;
     
@@ -1355,7 +1412,6 @@ int main(int argc, char* argv[]) {
             DeleteFileA(screenshot_path.c_str());
         } else {
             std::vector<ChatMessage> messages;
-            messages.emplace_back("system", system_prompt);
             messages.emplace_back("user", user_message);
             result = provider->sendMessage(messages, system_prompt);
         }
