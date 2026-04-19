@@ -13,6 +13,14 @@ Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。
 - 支持中文输入和文件管理
 - 完整的动作历史反馈机制
 
+## 📸 界面截图
+
+### 命令行版本
+![命令行版本](screenshot_cli.png)
+
+### Web GUI 版本
+![Web GUI 版本](screenshot_web.png)
+
 ## 🌟 核心功能
 
 | 功能 | 描述 |
