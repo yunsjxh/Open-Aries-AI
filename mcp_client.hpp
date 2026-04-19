@@ -154,7 +154,7 @@ private:
     bool initialize() {
         std::string initParams = "{\"protocolVersion\":\"2024-11-05\","
             "\"capabilities\":{\"tools\":{}},"
-            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.2.2\"}}";
+            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.3\"}}";
         
         std::string request = buildRequest("initialize", initParams, ++requestId_);
         std::string response = sendHttpRequest(request);
@@ -534,10 +534,9 @@ private:
     
     // 初始化 MCP 协议
     bool initialize() {
-        // 发送 initialize 请求
         std::string initParams = "{\"protocolVersion\":\"2024-11-05\","
             "\"capabilities\":{\"tools\":{}},"
-            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.2.2\"}}";
+            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.3\"}}";
         
         std::string request = buildRequest("initialize", initParams, ++requestId_);
         std::string response = sendRequest(request);

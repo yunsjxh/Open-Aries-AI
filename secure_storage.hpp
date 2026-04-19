@@ -625,6 +625,257 @@ private:
         
         return output;
     }
+    
+    // ==================== JSON 格式保存/加载提供商配置 ====================
+    
+public:
+    // 获取 JSON 配置文件路径
+    static std::string getJsonConfigPath() {
+        char path[MAX_PATH];
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        std::string exePath(path);
+        size_t lastSlash = exePath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            return exePath.substr(0, lastSlash) + "\\providers.json";
+        }
+        return "providers.json";
+    }
+    
+    // JSON 字符串转义
+    static std::string jsonEscape(const std::string& str) {
+        std::string result;
+        for (char c : str) {
+            switch (c) {
+                case '"': result += "\\\""; break;
+                case '\\': result += "\\\\"; break;
+                case '\n': result += "\\n"; break;
+                case '\r': result += "\\r"; break;
+                case '\t': result += "\\t"; break;
+                default: result += c;
+            }
+        }
+        return result;
+    }
+    
+    // JSON 字符串反转义
+    static std::string jsonUnescape(const std::string& str) {
+        std::string result;
+        for (size_t i = 0; i < str.length(); i++) {
+            if (str[i] == '\\' && i + 1 < str.length()) {
+                char next = str[i + 1];
+                switch (next) {
+                    case '"': result += '"'; i++; break;
+                    case '\\': result += '\\'; i++; break;
+                    case 'n': result += '\n'; i++; break;
+                    case 'r': result += '\r'; i++; break;
+                    case 't': result += '\t'; i++; break;
+                    default: result += str[i]; break;
+                }
+            } else {
+                result += str[i];
+            }
+        }
+        return result;
+    }
+    
+    // 从 JSON 字符串中提取字段值
+    static std::string extractJsonField(const std::string& json, const std::string& key) {
+        std::string searchKey = "\"" + key + "\"";
+        size_t pos = json.find(searchKey);
+        if (pos == std::string::npos) return "";
+        
+        pos = json.find(":", pos);
+        if (pos == std::string::npos) return "";
+        
+        while (pos < json.length() && (json[pos] == ':' || json[pos] == ' ' || json[pos] == '\t')) {
+            pos++;
+        }
+        
+        if (pos >= json.length()) return "";
+        
+        if (json[pos] == '"') {
+            pos++;
+            size_t endPos = pos;
+            while (endPos < json.length()) {
+                if (json[endPos] == '\\' && endPos + 1 < json.length()) {
+                    endPos += 2;
+                } else if (json[endPos] == '"') {
+                    break;
+                } else {
+                    endPos++;
+                }
+            }
+            return jsonUnescape(json.substr(pos, endPos - pos));
+        }
+        
+        return "";
+    }
+    
+    // 保存所有提供商配置到 JSON 文件（加密）
+    static bool saveProvidersToJson(const std::map<std::string, std::tuple<std::string, std::string, std::string>>& providers) {
+        // 构建 JSON 字符串
+        std::ostringstream json;
+        json << "{\n";
+        json << "  \"version\": 1,\n";
+        json << "  \"providers\": {\n";
+        
+        bool first = true;
+        for (const auto& [name, data] : providers) {
+            if (!first) json << ",\n";
+            first = false;
+            
+            const auto& [baseUrl, modelName, apiKey] = data;
+            
+            // 加密 API Key
+            std::string encryptedApiKey = encryptValue(apiKey);
+            
+            json << "    \"" << jsonEscape(name) << "\": {\n";
+            json << "      \"baseUrl\": \"" << jsonEscape(baseUrl) << "\",\n";
+            json << "      \"modelName\": \"" << jsonEscape(modelName) << "\",\n";
+            json << "      \"apiKey\": \"" << jsonEscape(encryptedApiKey) << "\"\n";
+            json << "    }";
+        }
+        
+        json << "\n  }\n";
+        json << "}\n";
+        
+        // 写入文件
+        std::ofstream file(getJsonConfigPath(), std::ios::out);
+        if (!file.is_open()) {
+            return false;
+        }
+        
+        file << json.str();
+        file.close();
+        
+        return true;
+    }
+    
+    // 从 JSON 文件加载所有提供商配置（解密）
+    static std::map<std::string, std::tuple<std::string, std::string, std::string>> loadProvidersFromJson() {
+        std::map<std::string, std::tuple<std::string, std::string, std::string>> providers;
+        
+        std::ifstream file(getJsonConfigPath(), std::ios::in);
+        if (!file.is_open()) {
+            return providers;
+        }
+        
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        file.close();
+        
+        // 解析 providers 对象
+        size_t providersPos = content.find("\"providers\"");
+        if (providersPos == std::string::npos) return providers;
+        
+        size_t providersStart = content.find("{", providersPos);
+        if (providersStart == std::string::npos) return providers;
+        
+        // 找到每个提供商
+        size_t pos = providersStart + 1;
+        while (pos < content.length()) {
+            // 找到提供商名称
+            size_t nameStart = content.find("\"", pos);
+            if (nameStart == std::string::npos) break;
+            
+            size_t nameEnd = content.find("\"", nameStart + 1);
+            if (nameEnd == std::string::npos) break;
+            
+            std::string name = jsonUnescape(content.substr(nameStart + 1, nameEnd - nameStart - 1));
+            
+            // 找到提供商对象
+            size_t objStart = content.find("{", nameEnd);
+            if (objStart == std::string::npos) break;
+            
+            size_t objEnd = content.find("}", objStart);
+            if (objEnd == std::string::npos) break;
+            
+            std::string objContent = content.substr(objStart, objEnd - objStart + 1);
+            
+            // 提取字段
+            std::string baseUrl = extractJsonField(objContent, "baseUrl");
+            std::string modelName = extractJsonField(objContent, "modelName");
+            std::string encryptedApiKey = extractJsonField(objContent, "apiKey");
+            
+            // 解密 API Key
+            std::string apiKey = decryptValue(encryptedApiKey);
+            
+            providers[name] = {baseUrl, modelName, apiKey};
+            
+            pos = objEnd + 1;
+            
+            // 跳过逗号
+            while (pos < content.length() && (content[pos] == ',' || content[pos] == ' ' || content[pos] == '\n' || content[pos] == '\r' || content[pos] == '\t')) {
+                pos++;
+            }
+        }
+        
+        return providers;
+    }
+    
+    // 加密单个值
+    static std::string encryptValue(const std::string& value) {
+        if (value.empty()) return "";
+        
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) return "";
+        
+        std::string salt = generateSalt();
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        
+        std::string encrypted = xorEncrypt(value, hashedKey);
+        std::string dpapiEncrypted = dpapiEncrypt(encrypted);
+        
+        if (dpapiEncrypted.empty()) return "";
+        
+        return salt + ":" + stringToHex(dpapiEncrypted);
+    }
+    
+    // 解密单个值
+    static std::string decryptValue(const std::string& encrypted) {
+        if (encrypted.empty()) {
+            std::cerr << "[调试] decryptValue: 输入为空" << std::endl;
+            return "";
+        }
+        
+        size_t colonPos = encrypted.find(":");
+        if (colonPos == std::string::npos) {
+            std::cerr << "[调试] decryptValue: 找不到冒号分隔符" << std::endl;
+            return "";
+        }
+        
+        std::string salt = encrypted.substr(0, colonPos);
+        std::string hexEncrypted = encrypted.substr(colonPos + 1);
+        
+        std::cerr << "[调试] decryptValue: salt长度=" << salt.length() << ", hexEncrypted长度=" << hexEncrypted.length() << std::endl;
+        
+        std::string dpapiEncrypted = hexToString(hexEncrypted);
+        if (dpapiEncrypted.empty()) {
+            std::cerr << "[调试] decryptValue: hexToString失败" << std::endl;
+            return "";
+        }
+        
+        std::string decrypted = dpapiDecrypt(dpapiEncrypted);
+        if (decrypted.empty()) {
+            std::cerr << "[调试] decryptValue: dpapiDecrypt失败" << std::endl;
+            return "";
+        }
+        
+        std::string hardwareId = getHardwareFingerprint();
+        if (hardwareId.empty()) {
+            std::cerr << "[调试] decryptValue: getHardwareFingerprint失败" << std::endl;
+            return "";
+        }
+        
+        std::string key = hardwareId + salt;
+        std::string hashedKey = hashString(key);
+        
+        std::string result = xorEncrypt(decrypted, hashedKey);
+        std::cerr << "[调试] decryptValue: 解密成功, 结果长度=" << result.length() << std::endl;
+        return result;
+    }
+    
+private:
 };
 
 } // namespace aries

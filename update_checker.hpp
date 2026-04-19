@@ -356,30 +356,54 @@ private:
     }
     
 public:
-    // 从GitHub releases下载最新版本
-    static bool downloadLatestRelease(const std::string& repoUrl, const std::string& downloadPath, std::string& outDownloadUrl) {
-        // 首先获取最新版本信息
+    static bool downloadSpecificFile(const std::string& repoUrl, const std::string& fileName, const std::string& savePath) {
         ReleaseInfo info = checkForUpdate(repoUrl);
         if (!info.success) {
             std::cerr << "无法获取版本信息: " << info.errorMessage << std::endl;
             return false;
         }
         
-        // 解析仓库地址
         std::string owner, repo;
         if (!parseRepoUrl(repoUrl, owner, repo)) {
             std::cerr << "无法解析仓库地址" << std::endl;
             return false;
         }
         
-        // 构建下载URL (假设exe文件名为 aries_agent.exe)
+        std::string downloadUrl = "https://github.com/" + owner + "/" + repo + "/releases/download/" + info.version + "/" + fileName;
+        
+        std::cout << "正在下载: " << fileName << std::endl;
+        std::cout << "下载地址: " << downloadUrl << std::endl;
+        
+        return downloadFile(downloadUrl, savePath);
+    }
+    
+    static std::string getLatestVersion(const std::string& repoUrl) {
+        ReleaseInfo info = checkForUpdate(repoUrl);
+        if (info.success) {
+            return info.version;
+        }
+        return "";
+    }
+    
+    static bool downloadLatestRelease(const std::string& repoUrl, const std::string& downloadPath, std::string& outDownloadUrl) {
+        ReleaseInfo info = checkForUpdate(repoUrl);
+        if (!info.success) {
+            std::cerr << "无法获取版本信息: " << info.errorMessage << std::endl;
+            return false;
+        }
+        
+        std::string owner, repo;
+        if (!parseRepoUrl(repoUrl, owner, repo)) {
+            std::cerr << "无法解析仓库地址" << std::endl;
+            return false;
+        }
+        
         std::string downloadUrl = "https://github.com/" + owner + "/" + repo + "/releases/download/" + info.version + "/aries_agent.exe";
         outDownloadUrl = downloadUrl;
         
         std::cout << "正在下载最新版本: " << info.version << std::endl;
         std::cout << "下载地址: " << downloadUrl << std::endl;
         
-        // 下载文件
         return downloadFile(downloadUrl, downloadPath);
     }
     

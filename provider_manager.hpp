@@ -90,11 +90,28 @@ public:
             return nullptr;
         }
         
-        // 尝试从安全存储加载 API Key
-        std::string apiKey = SecureStorage::loadApiKey(name);
-        std::cerr << "[调试] createProvider: loadApiKey(" << name << ") 返回长度=" << apiKey.length() << std::endl;
-        if (!apiKey.empty()) {
-            config->apiKey = apiKey;
+        std::cerr << "[调试] createProvider: config->apiKey 长度=" << config->apiKey.length() << std::endl;
+        
+        // 如果 config 中没有 apiKey，尝试从 JSON 加载
+        if (config->apiKey.empty()) {
+            auto providers = SecureStorage::loadProvidersFromJson();
+            auto it = providers.find(name);
+            if (it != providers.end()) {
+                const auto& [baseUrl, modelName, apiKey] = it->second;
+                config->apiKey = apiKey;
+                if (config->baseUrl.empty()) config->baseUrl = baseUrl;
+                if (config->modelName.empty()) config->modelName = modelName;
+                std::cerr << "[调试] createProvider: 从 JSON 加载 apiKey, 长度=" << apiKey.length() << std::endl;
+            }
+        }
+        
+        // 如果还是没有，尝试从旧的安全存储加载
+        if (config->apiKey.empty()) {
+            std::string apiKey = SecureStorage::loadApiKey(name);
+            std::cerr << "[调试] createProvider: loadApiKey(" << name << ") 返回长度=" << apiKey.length() << std::endl;
+            if (!apiKey.empty()) {
+                config->apiKey = apiKey;
+            }
         }
         
         if (config->apiKey.empty()) {
@@ -134,12 +151,64 @@ public:
         if (config) {
             config->apiKey = apiKey;
         }
-        return SecureStorage::saveApiKey(apiKey, name);
+        
+        // 加载现有配置
+        auto providers = SecureStorage::loadProvidersFromJson();
+        
+        // 更新或添加提供商
+        std::string baseUrl = config ? config->baseUrl : "";
+        std::string modelName = config ? config->modelName : "";
+        providers[name] = {baseUrl, modelName, apiKey};
+        
+        // 保存到 JSON
+        return SecureStorage::saveProvidersToJson(providers);
+    }
+    
+    // 保存自定义提供商（包含 baseUrl 和 apiKey）
+    bool saveCustomProvider(const std::string& name, const std::string& baseUrl, 
+                            const std::string& modelName, const std::string& apiKey) {
+        // 注册配置
+        ProviderConfig config;
+        config.name = name;
+        config.baseUrl = baseUrl;
+        config.modelName = modelName;
+        config.supportsVision = false;
+        registerProviderConfig(config);
+        
+        // 加载现有配置
+        auto providers = SecureStorage::loadProvidersFromJson();
+        
+        // 更新或添加提供商
+        providers[name] = {baseUrl, modelName, apiKey};
+        
+        // 保存到 JSON
+        return SecureStorage::saveProvidersToJson(providers);
+    }
+    
+    // 加载所有保存的提供商
+    void loadSavedProviders() {
+        auto providers = SecureStorage::loadProvidersFromJson();
+        std::cerr << "[调试] loadSavedProviders: 加载了 " << providers.size() << " 个提供商" << std::endl;
+        for (const auto& [name, data] : providers) {
+            const auto& [baseUrl, modelName, apiKey] = data;
+            
+            std::cerr << "[调试] 加载提供商: " << name << ", baseUrl=" << baseUrl << ", apiKey长度=" << apiKey.length() << std::endl;
+            
+            // 注册配置
+            ProviderConfig config;
+            config.name = name;
+            config.baseUrl = baseUrl;
+            config.modelName = modelName;
+            config.apiKey = apiKey;
+            config.supportsVision = false;
+            registerProviderConfig(config);
+        }
     }
     
     // 检查是否有保存的 API Key
     bool hasSavedApiKey(const std::string& name) const {
-        return SecureStorage::hasSavedApiKey(name);
+        auto providers = SecureStorage::loadProvidersFromJson();
+        return providers.find(name) != providers.end();
     }
     
     // 获取提供商信息字符串
