@@ -64,6 +64,15 @@ public:
         configs_[config.name] = config;
     }
     
+    // 删除提供商配置
+    void removeProviderConfig(const std::string& name) {
+        configs_.erase(name);
+        if (currentProviderName_ == name) {
+            currentProviderName_ = "";
+            currentProvider_ = nullptr;
+        }
+    }
+    
     // 获取所有提供商名称
     std::vector<std::string> getProviderNames() const {
         std::vector<std::string> names;
@@ -123,6 +132,42 @@ public:
             config->apiKey,
             config->baseUrl,
             config->modelName,
+            config->supportsVision,
+            config->supportsAudio,
+            config->supportsVideo
+        );
+    }
+    
+    // 创建提供商实例（指定模型）
+    AIProviderPtr createProviderWithModel(const std::string& name, const std::string& model) {
+        auto* config = getConfig(name);
+        if (!config) return nullptr;
+        
+        // 加载 API Key
+        if (config->apiKey.empty()) {
+            auto providers = SecureStorage::loadProvidersFromJson();
+            auto it = providers.find(name);
+            if (it != providers.end()) {
+                const auto& [baseUrl, modelName, apiKey] = it->second;
+                config->apiKey = apiKey;
+                if (config->baseUrl.empty()) config->baseUrl = baseUrl;
+            }
+        }
+        
+        if (config->apiKey.empty()) {
+            std::string apiKey = SecureStorage::loadApiKey(name);
+            if (!apiKey.empty()) config->apiKey = apiKey;
+        }
+        
+        if (config->apiKey.empty()) return nullptr;
+        
+        // 使用指定的模型名称
+        std::string useModel = model.empty() ? config->modelName : model;
+        
+        return std::make_shared<OpenAICompatibleProvider>(
+            config->apiKey,
+            config->baseUrl,
+            useModel,
             config->supportsVision,
             config->supportsAudio,
             config->supportsVideo
@@ -222,6 +267,15 @@ public:
             return info;
         }
         return name;
+    }
+    
+    // 获取提供商的 Base URL
+    std::string getBaseUrl(const std::string& name) const {
+        auto it = configs_.find(name);
+        if (it != configs_.end()) {
+            return it->second.baseUrl;
+        }
+        return "";
     }
     
     // 获取可用模型列表

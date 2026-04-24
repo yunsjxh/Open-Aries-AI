@@ -154,7 +154,7 @@ private:
     bool initialize() {
         std::string initParams = "{\"protocolVersion\":\"2024-11-05\","
             "\"capabilities\":{\"tools\":{}},"
-            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.3\"}}";
+            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.3.0.1\"}}";
         
         std::string request = buildRequest("initialize", initParams, ++requestId_);
         std::string response = sendHttpRequest(request);
@@ -536,7 +536,7 @@ private:
     bool initialize() {
         std::string initParams = "{\"protocolVersion\":\"2024-11-05\","
             "\"capabilities\":{\"tools\":{}},"
-            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.3\"}}";
+            "\"clientInfo\":{\"name\":\"Open-Aries-AI\",\"version\":\"1.3.0.1\"}}";
         
         std::string request = buildRequest("initialize", initParams, ++requestId_);
         std::string response = sendRequest(request);
@@ -829,6 +829,23 @@ public:
             }
         }
         return "Unknown";
+    }
+    
+    // 获取指定服务器的工具列表
+    std::vector<Tool> getServerTools(const std::string& name) const {
+        {
+            auto it = clients_.find(name);
+            if (it != clients_.end()) {
+                return it->second->getTools();
+            }
+        }
+        {
+            auto it = httpClients_.find(name);
+            if (it != httpClients_.end()) {
+                return it->second->getTools();
+            }
+        }
+        return {};
     }
     
     // 获取最后的错误
