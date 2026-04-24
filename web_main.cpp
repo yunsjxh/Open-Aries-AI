@@ -141,6 +141,9 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
         .provider-card.active .provider-icon svg { color: var(--accent-secondary); }
         .provider-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
         .provider-model { font-size: 12px; color: var(--text-muted); }
+        .provider-actions { display: flex; gap: 4px; margin-top: 8px; justify-content: center; }
+        .btn-icon { background: var(--bg-hover); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 4px; cursor: pointer; color: var(--text-muted); transition: all var(--transition-fast); }
+        .btn-icon:hover { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-light); }
         .screenshot-preview { max-width: 100%; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-top: 16px; }
         .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
         .empty-state svg { width: 48px; height: 48px; margin-bottom: 16px; opacity: 0.5; }
@@ -178,7 +181,7 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                     </div>
                     <div>
                         <div class="logo-text">Open-Aries-AI</div>
-                        <div class="logo-version">v1.3</div>
+                        <div class="logo-version">v1.3.0.1</div>
                     </div>
                 </div>
             </div>
@@ -240,8 +243,11 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                         </div>
                         <div class="input-row">
                             <div class="input-group">
-                                <label class="input-label">模型名称 (可选，留空使用默认)</label>
-                                <input type="text" class="input-field" id="modelNameInput" placeholder="例如: gpt-4o, deepseek-chat" />
+                                <label class="input-label">模型名称 (可选，留空使用默认) <span id="modelTestStatus" style="font-weight: normal; font-size: 12px;"></span></label>
+                                <div style="display: flex; gap: 8px;">
+                                    <input type="text" class="input-field" id="modelNameInput" placeholder="例如: gpt-4o, deepseek-chat" style="flex: 1;" onchange="testModelAvailability()" />
+                                    <button class="btn btn-secondary" onclick="testModelAvailability()" title="测试模型可用性" style="padding: 8px 12px; white-space: nowrap;"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> 测试</button>
+                                </div>
                             </div>
                             <div class="input-group">
                                 <label class="input-label">最大迭代次数</label>
@@ -363,7 +369,7 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                                 <label class="input-label">API Key</label>
                                 <input type="password" class="input-field" id="customProviderApiKey" placeholder="输入 API Key" />
                             </div>
-                            <button class="btn btn-primary" onclick="addCustomProvider()"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>添加提供商</button>
+                            <button class="btn btn-primary" onclick="saveProvider()"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span id="providerBtnText">添加提供商</span></button>
                         </div>
                     </div>
                     <div class="card">
@@ -553,7 +559,19 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                     body: JSON.stringify(data)
                 });
                 const result = await response.json();
-                if (result.success) { alert('连接成功: ' + result.serverInfo); refreshMcpServers(); }
+                if (result.success) {
+                    let msg = '连接成功: ' + result.serverInfo;
+                    if (result.available) {
+                        msg += '\n✅ 服务器可用';
+                        if (result.tools && result.tools.length > 0) {
+                            msg += '\n可用工具: ' + result.tools.map(t => t.name).join(', ');
+                        }
+                    } else {
+                        msg += '\n⚠️ 无法获取工具列表';
+                    }
+                    alert(msg);
+                    refreshMcpServers();
+                }
                 else { alert('连接失败: ' + result.error); }
             } catch (e) { alert('请求失败: ' + e.message); }
         }
@@ -586,25 +604,83 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
             try { fetch(API_BASE + '/api/settings/provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: name }) }); }
             catch (e) { console.error('Failed to select provider:', e); }
         }
-        async function addCustomProvider() {
+        async function saveProvider() {
             const name = document.getElementById('customProviderName').value.trim();
             const url = document.getElementById('customProviderUrl').value.trim();
             const apiKey = document.getElementById('customProviderApiKey').value.trim();
+            const isEditMode = document.getElementById('customProviderName').dataset.editMode === 'true';
+            
             if (!name || !url) { alert('请填写提供商名称和 API Base URL'); return; }
+            
+            // 如果是编辑模式且有 API Key，使用 update 端点
+            // 如果是添加模式，使用 add 端点
+            const endpoint = isEditMode ? '/api/settings/provider/update' : '/api/settings/provider/add';
+            
             try {
-                const response = await fetch(API_BASE + '/api/settings/provider/add', {
+                const response = await fetch(API_BASE + endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, url, apiKey })
                 });
                 const result = await response.json();
                 if (result.success) {
-                    alert('提供商添加成功');
+                    alert(isEditMode ? '提供商更新成功' : '提供商添加成功');
                     document.getElementById('customProviderName').value = '';
                     document.getElementById('customProviderUrl').value = '';
                     document.getElementById('customProviderApiKey').value = '';
+                    document.getElementById('customProviderName').dataset.editMode = 'false';
+                    document.getElementById('providerBtnText').textContent = '添加提供商';
+                    document.getElementById('customProviderApiKey').placeholder = '输入 API Key';
+                    document.getElementById('customProviderForm').style.display = 'none';
+                    // 重置只读状态
+                    document.getElementById('customProviderName').readOnly = false;
+                    document.getElementById('customProviderUrl').readOnly = false;
+                    document.getElementById('customProviderName').style.opacity = '1';
+                    document.getElementById('customProviderUrl').style.opacity = '1';
                     refreshSettings();
-                } else { alert('添加提供商失败: ' + result.error); }
+                } else { alert((isEditMode ? '更新' : '添加') + '提供商失败: ' + result.error); }
+            } catch (e) { alert('请求失败: ' + e.message); }
+        }
+        function editProvider(name, baseUrl) {
+            const builtInProviders = ['zhipu', 'deepseek', 'openai'];
+            const isBuiltIn = builtInProviders.includes(name.toLowerCase());
+            
+            document.getElementById('customProviderName').value = name;
+            document.getElementById('customProviderUrl').value = baseUrl;
+            document.getElementById('customProviderApiKey').value = '';
+            document.getElementById('customProviderApiKey').placeholder = '留空则保持原 API Key 不变';
+            document.getElementById('customProviderForm').style.display = 'block';
+            document.getElementById('providerBtnText').textContent = '更新提供商';
+            document.querySelectorAll('.provider-card').forEach(card => card.classList.remove('active'));
+            currentSelectedProvider = name;
+            document.getElementById('customProviderName').dataset.editMode = 'true';
+            
+            // 内置提供商：名称和 URL 只读
+            if (isBuiltIn) {
+                document.getElementById('customProviderName').readOnly = true;
+                document.getElementById('customProviderUrl').readOnly = true;
+                document.getElementById('customProviderName').style.opacity = '0.6';
+                document.getElementById('customProviderUrl').style.opacity = '0.6';
+            } else {
+                document.getElementById('customProviderName').readOnly = false;
+                document.getElementById('customProviderUrl').readOnly = false;
+                document.getElementById('customProviderName').style.opacity = '1';
+                document.getElementById('customProviderUrl').style.opacity = '1';
+            }
+        }
+        async function deleteProvider(name) {
+            if (!confirm('确定要删除提供商 "' + name + '" 吗？')) return;
+            try {
+                const response = await fetch(API_BASE + '/api/settings/provider/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    alert('提供商已删除');
+                    refreshSettings();
+                } else { alert('删除失败: ' + result.error); }
             } catch (e) { alert('请求失败: ' + e.message); }
         }
         async function refreshSettings() {
@@ -618,7 +694,17 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                 if (result.visionMode !== undefined) document.getElementById('visionMode').checked = result.visionMode;
                 if (result.providers && result.providers.length > 0) {
                     const container = document.getElementById('providerList');
-                    container.innerHTML = result.providers.map(p => '<div class="provider-card ' + (p.name === result.provider ? 'active' : '') + '" onclick="selectProviderByName(\'' + p.name + '\')"><div class="provider-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div><div class="provider-name">' + p.name + '</div><div class="provider-model">' + (p.hasKey ? '✓ 已配置' : '未配置') + '</div></div>').join('') + '<div class="provider-card" onclick="showCustomProviderForm()"><div class="provider-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div><div class="provider-name">添加新提供商</div><div class="provider-model">OpenAI 兼容</div></div>';
+                    const builtInProviders = ['zhipu', 'deepseek', 'openai'];
+                    container.innerHTML = result.providers.map(p => {
+                        const isBuiltIn = builtInProviders.includes(p.name.toLowerCase());
+                        return '<div class="provider-card ' + (p.name === result.provider ? 'active' : '') + '" onclick="selectProviderByName(\'' + p.name + '\')">' +
+                            '<div class="provider-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div>' +
+                            '<div class="provider-name">' + p.name + '</div>' +
+                            '<div class="provider-model">' + (p.hasKey ? '✓ 已配置' : '未配置') + '</div>' +
+                            '<div class="provider-actions" onclick="event.stopPropagation()"><button class="btn-icon" onclick="editProvider(\'' + p.name + '\', \'' + (p.baseUrl || '') + '\')" title="编辑"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+                            (isBuiltIn ? '' : '<button class="btn-icon" onclick="deleteProvider(\'' + p.name + '\')" title="删除"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>') +
+                            '</div></div>';
+                    }).join('') + '<div class="provider-card" onclick="showCustomProviderForm()"><div class="provider-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div><div class="provider-name">添加新提供商</div><div class="provider-model">OpenAI 兼容</div></div>';
                 }
             } catch (e) { console.error('Failed to refresh settings:', e); }
             finally { isLoadingSettings = false; }
@@ -641,6 +727,17 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
             event.currentTarget.classList.add('active');
             currentSelectedProvider = '';
             document.getElementById('customProviderForm').style.display = 'block';
+            document.getElementById('customProviderName').value = '';
+            document.getElementById('customProviderUrl').value = '';
+            document.getElementById('customProviderApiKey').value = '';
+            document.getElementById('customProviderApiKey').placeholder = '输入 API Key';
+            document.getElementById('providerBtnText').textContent = '添加提供商';
+            document.getElementById('customProviderName').dataset.editMode = 'false';
+            // 重置只读状态
+            document.getElementById('customProviderName').readOnly = false;
+            document.getElementById('customProviderUrl').readOnly = false;
+            document.getElementById('customProviderName').style.opacity = '1';
+            document.getElementById('customProviderUrl').style.opacity = '1';
         }
         async function refreshLogs() {
             if (isLoadingLogs) return;
@@ -681,6 +778,34 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                     alert('当前版本比发布版本更新: ' + result.currentVersion);
                 }
             } catch (e) { alert('检查更新失败: ' + e.message); }
+        }
+        async function testModelAvailability() {
+            const model = document.getElementById('modelNameInput').value.trim();
+            const statusSpan = document.getElementById('modelTestStatus');
+            
+            statusSpan.textContent = '测试中...';
+            statusSpan.style.color = 'var(--text-muted)';
+            
+            try {
+                const response = await fetch(API_BASE + '/api/model/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    statusSpan.textContent = '✅ 可用 (' + result.model + ')';
+                    statusSpan.style.color = 'var(--success)';
+                } else {
+                    statusSpan.textContent = '❌ 不可用';
+                    statusSpan.style.color = 'var(--error)';
+                    console.error('Model test failed:', result.error);
+                }
+            } catch (e) {
+                statusSpan.textContent = '❌ 测试失败';
+                statusSpan.style.color = 'var(--error)';
+                console.error('Model test error:', e);
+            }
         }
         refreshSettings();
         refreshMcpServers();
@@ -769,7 +894,8 @@ web::HttpResponse handleGetSettings(const web::HttpRequest& req) {
         if (i > 0) oss << ",";
         std::string info = providerMgr.getProviderInfo(providerNames[i]);
         bool hasKey = providerMgr.hasSavedApiKey(providerNames[i]);
-        oss << "{\"name\":\"" << providerNames[i] << "\",\"info\":\"" << web::escapeJson(info) << "\",\"hasKey\":" << (hasKey ? "true" : "false") << "}";
+        std::string baseUrl = providerMgr.getBaseUrl(providerNames[i]);
+        oss << "{\"name\":\"" << providerNames[i] << "\",\"info\":\"" << web::escapeJson(info) << "\",\"hasKey\":" << (hasKey ? "true" : "false") << ",\"baseUrl\":\"" << web::escapeJson(baseUrl) << "\"}";
     }
     oss << "]";
     oss << "}";
@@ -814,6 +940,55 @@ web::HttpResponse handleAddProvider(const web::HttpRequest& req) {
     providerMgr.saveCustomProvider(name, url, "", apiKey);
     
     addLog("添加自定义提供商: " + name);
+    
+    web::HttpResponse res;
+    res.setJson("{\"success\":true}");
+    return res;
+}
+
+web::HttpResponse handleDeleteProvider(const web::HttpRequest& req) {
+    std::string name = web::extractJsonString(req.body, "name");
+    
+    if (name.empty()) {
+        web::HttpResponse res;
+        res.setError(400, "Name is required");
+        return res;
+    }
+    
+    auto& providerMgr = ProviderManager::getInstance();
+    
+    // 从 JSON 配置中删除
+    auto providers = SecureStorage::loadProvidersFromJson();
+    providers.erase(name);
+    SecureStorage::saveProvidersToJson(providers);
+    
+    // 从内存中删除
+    providerMgr.removeProviderConfig(name);
+    
+    addLog("删除提供商: " + name);
+    
+    web::HttpResponse res;
+    res.setJson("{\"success\":true}");
+    return res;
+}
+
+web::HttpResponse handleUpdateProvider(const web::HttpRequest& req) {
+    std::string name = web::extractJsonString(req.body, "name");
+    std::string url = web::extractJsonString(req.body, "url");
+    std::string apiKey = web::extractJsonString(req.body, "apiKey");
+    
+    if (name.empty() || url.empty()) {
+        web::HttpResponse res;
+        res.setError(400, "Name and URL are required");
+        return res;
+    }
+    
+    auto& providerMgr = ProviderManager::getInstance();
+    
+    // 更新提供商配置（会覆盖同名配置）
+    providerMgr.saveCustomProvider(name, url, "", apiKey);
+    
+    addLog("更新提供商: " + name);
     
     web::HttpResponse res;
     res.setJson("{\"success\":true}");
@@ -905,9 +1080,19 @@ web::HttpResponse handleMcpConnect(const web::HttpRequest& req) {
     }
     
     if (success) {
-        addLog("MCP 服务器连接成功: " + name);
+        // 连接成功后自动检测可用性 - 获取工具列表
+        auto tools = mcpMgr.getServerTools(name);
+        bool available = !tools.empty();
+        
+        addLog("MCP 服务器连接成功: " + name + (available ? " (可用)" : " (无法获取工具列表)"));
+        
         std::ostringstream oss;
-        oss << "{\"success\":true,\"serverInfo\":\"" << web::escapeJson(mcpMgr.getServerInfo(name)) << "\"}";
+        oss << "{\"success\":true,\"serverInfo\":\"" << web::escapeJson(mcpMgr.getServerInfo(name)) << "\",\"available\":" << (available ? "true" : "false") << ",\"tools\":[";
+        for (size_t i = 0; i < tools.size(); i++) {
+            if (i > 0) oss << ",";
+            oss << "{\"name\":\"" << web::escapeJson(tools[i].name) << "\",\"description\":\"" << web::escapeJson(tools[i].description) << "\"}";
+        }
+        oss << "]}";
         web::HttpResponse res;
         res.setJson(oss.str());
         return res;
@@ -1315,7 +1500,7 @@ web::HttpResponse handleTaskStatus(const web::HttpRequest& req) {
 }
 
 web::HttpResponse handleCheckUpdate(const web::HttpRequest& req) {
-    std::string currentVersion = "v1.3";
+    std::string currentVersion = "v1.3.0.1";
     std::string latestVersion = "";
     bool hasUpdate = false;
     
@@ -1340,6 +1525,44 @@ web::HttpResponse handleCheckUpdate(const web::HttpRequest& req) {
     return res;
 }
 
+web::HttpResponse handleTestModel(const web::HttpRequest& req) {
+    std::string model = web::extractJsonString(req.body, "model");
+    
+    auto& providerMgr = ProviderManager::getInstance();
+    std::string providerName = providerMgr.getCurrentProviderName();
+    
+    if (providerName.empty()) {
+        web::HttpResponse res;
+        res.setError(400, "未选择提供商");
+        return res;
+    }
+    
+    auto provider = providerMgr.createProviderWithModel(providerName, model);
+    if (!provider) {
+        web::HttpResponse res;
+        res.setError(400, "无法创建提供商实例，请检查 API Key 配置");
+        return res;
+    }
+    
+    // 发送简单测试请求
+    std::vector<ChatMessage> messages;
+    messages.emplace_back("user", "回复OK两个字母即可");
+    
+    auto [success, response] = provider->sendMessage(messages, "你是一个助手，请简洁回复。");
+    
+    if (success) {
+        addLog("模型测试成功: " + providerName + " / " + provider->getModelName());
+        web::HttpResponse res;
+        res.setJson("{\"success\":true,\"model\":\"" + web::escapeJson(provider->getModelName()) + "\"}");
+        return res;
+    } else {
+        addLog("模型测试失败: " + provider->getLastError());
+        web::HttpResponse res;
+        res.setError(500, provider->getLastError());
+        return res;
+    }
+}
+
 int main() {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
@@ -1357,7 +1580,7 @@ int main() {
       /:/  /       |:|  |       \/__/        \:\__\        \::/  /                 /:/  /      \/__/    
       \/__/         \|__|                     \/__/         \/__/                  \/__/
 )" << std::endl;
-    std::cout << "  Open-Aries-AI - Web 服务器  版本 v1.3" << std::endl;
+    std::cout << "  Open-Aries-AI - Web 服务器  版本 v1.3.0.1" << std::endl;
     std::cout << std::endl;
     
     CreateDirectoryA("temp", NULL);
@@ -1374,6 +1597,8 @@ int main() {
     server.get("/api/settings", handleGetSettings);
     server.post("/api/settings/provider", handleSetProvider);
     server.post("/api/settings/provider/add", handleAddProvider);
+    server.post("/api/settings/provider/update", handleUpdateProvider);
+    server.post("/api/settings/provider/delete", handleDeleteProvider);
     server.post("/api/settings/apikey", handleSaveApiKey);
     server.post("/api/settings/vision", handleSetVision);
     
@@ -1388,6 +1613,7 @@ int main() {
     server.post("/api/task/stop", handleTaskStop);
     server.get("/api/task/status", handleTaskStatus);
     server.get("/api/update/check", handleCheckUpdate);
+    server.post("/api/model/test", handleTestModel);
     
     addLog("Web 服务器启动");
     

@@ -24,7 +24,7 @@
 using namespace aries;
 
 const std::string LOG_FILE = "aries_agent.log";
-const std::string CURRENT_VERSION = "v1.3";
+const std::string CURRENT_VERSION = "v1.3.0.1";
 const std::string GITHUB_REPO = "https://github.com/yunsjxh/Open-Aries-AI/releases";
 
 std::string getCurrentTime() {
@@ -832,7 +832,7 @@ int main(int argc, char* argv[]) {
     std::ifstream webExeCheck(webExePath);
     if (!webExeCheck.good()) {
         std::cout << "========================================" << std::endl;
-        std::cout << "【提示】v1.3 新增 Web GUI 版本！" << std::endl;
+        std::cout << "【提示】v1.3.0.1 新增 Web GUI 版本！" << std::endl;
         std::cout << "输入 'update' 可下载 aries_web.exe" << std::endl;
         std::cout << "或访问: " << GITHUB_REPO << std::endl;
         std::cout << "========================================" << std::endl;
