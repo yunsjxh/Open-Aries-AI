@@ -91,6 +91,7 @@ UI Automation 使用建议：
 - 控件树会返回控件的名称、类型、位置和 Automation ID 等信息
 - 可以使用 UIA_ClickControl 通过控件名称自动点击，无需手动计算坐标
 - 对于复杂的窗口操作，UI Automation 比屏幕坐标点击更稳定可靠
+- **重要：当前使用视觉模式（图像识别），优先通过截图观察界面，直接使用坐标点击（Tap/Click）操作，不要依赖 UI 树判断，因为 UI 树有时无法正确识别某些元素**
 
 窗口操作（新增）：
 - 最小化窗口: do(action="Window_Minimize", window="窗口标题", desc="最小化窗口") - 不指定window则操作当前窗口

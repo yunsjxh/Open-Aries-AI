@@ -8,6 +8,7 @@
 #include "ui_automation.hpp"
 #include "prompt_templates.hpp"
 #include "update_checker.hpp"
+#include "status_window.hpp"
 #include <iostream>
 #include <vector>
 #include <mutex>
@@ -181,7 +182,7 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                     </div>
                     <div>
                         <div class="logo-text">Open-Aries-AI</div>
-                        <div class="logo-version">v1.3.0.1</div>
+                        <div class="logo-version">v1.3.1</div>
                     </div>
                 </div>
             </div>
@@ -637,6 +638,19 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                     document.getElementById('customProviderUrl').readOnly = false;
                     document.getElementById('customProviderName').style.opacity = '1';
                     document.getElementById('customProviderUrl').style.opacity = '1';
+                    
+                    // 自动切换到新添加/更新的提供商
+                    if (!isEditMode && name) {
+                        try {
+                            await fetch(API_BASE + '/api/settings/provider', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ provider: name })
+                            });
+                            document.getElementById('currentProvider').textContent = name;
+                        } catch (e) { console.error('Failed to switch provider:', e); }
+                    }
+                    
                     refreshSettings();
                 } else { alert((isEditMode ? '更新' : '添加') + '提供商失败: ' + result.error); }
             } catch (e) { alert('请求失败: ' + e.message); }
@@ -770,7 +784,9 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
             try {
                 const response = await fetch(API_BASE + '/api/update/check');
                 const result = await response.json();
-                if (result.hasUpdate) {
+                if (!result.success) {
+                    alert('检查更新失败: ' + (result.error || '无法连接到GitHub'));
+                } else if (result.hasUpdate) {
                     alert('发现新版本: ' + result.latestVersion + '\n当前版本: ' + result.currentVersion + '\n\n请访问 GitHub 下载最新版本');
                 } else if (result.currentVersion === result.latestVersion) {
                     alert('当前已是最新版本: ' + result.currentVersion);
@@ -828,6 +844,22 @@ std::string g_currentTask;
 bool g_visionMode = true;
 std::string g_visionProvider;
 std::string g_visionModel;
+const std::string LOG_FILE = "aries_web.log";
+
+void initLogFile() {
+    // 启动时清空日志文件
+    std::ofstream logFile(LOG_FILE, std::ios::trunc);
+    if (logFile.is_open()) {
+        auto now = std::chrono::system_clock::now();
+        auto time = std::chrono::system_clock::to_time_t(now);
+        std::tm tm;
+        localtime_s(&tm, &time);
+        char timeStr[32];
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm);
+        logFile << "[" << timeStr << "] 日志开始记录" << std::endl;
+        logFile.close();
+    }
+}
 
 void addLog(const std::string& message, const std::string& type = "info") {
     std::lock_guard<std::mutex> lock(g_logMutex);
@@ -840,6 +872,14 @@ void addLog(const std::string& message, const std::string& type = "info") {
     g_logs.push_back({timeStr, message});
     if (g_logs.size() > 1000) {
         g_logs.erase(g_logs.begin());
+    }
+    std::cout << "[" << timeStr << "] " << message << std::endl;
+    
+    // 写入日志文件
+    std::ofstream logFile(LOG_FILE, std::ios::app);
+    if (logFile.is_open()) {
+        logFile << "[" << timeStr << "] " << message << std::endl;
+        logFile.close();
     }
 }
 
@@ -1249,25 +1289,50 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
     g_visionProvider = visionProvider;
     g_visionModel = visionModel;
     
+    // 创建状态窗口（在主线程）
+    auto& statusWindow = StatusWindow::getInstance();
+    statusWindow.create();
+    statusWindow.setStopCallback([]() {
+        g_taskStop = true;
+        addLog("用户请求停止任务");
+    });
+    
+    // 最小化浏览器窗口和控制台窗口
+    HWND browserWnd = GetForegroundWindow();
+    if (browserWnd) {
+        ShowWindow(browserWnd, SW_MINIMIZE);
+    }
+    HWND consoleWnd = GetConsoleWindow();
+    if (consoleWnd) {
+        ShowWindow(consoleWnd, SW_MINIMIZE);
+    }
+    
     const int finalMaxIterations = maxIterations;
     
     std::thread([finalMaxIterations]() {
         auto& providerMgr = ProviderManager::getInstance();
         auto provider = providerMgr.getCurrentProvider();
+        std::string mainProviderName = providerMgr.getCurrentProviderName(); // 保存主提供商名称
         
         // 如果配置了视觉模型转述，创建视觉模型 provider
         AIProviderPtr visionProvider = nullptr;
         if (!g_visionMode && !g_visionProvider.empty()) {
-            providerMgr.setCurrentProvider(g_visionProvider);
-            if (!g_visionModel.empty()) {
-                providerMgr.setCurrentModel(g_visionProvider, g_visionModel);
+            addLog("创建视觉模型 provider: " + g_visionProvider);
+            
+            // 直接创建视觉模型 provider，不切换当前 provider
+            auto* visionConfig = providerMgr.getConfig(g_visionProvider);
+            if (visionConfig) {
+                addLog("视觉模型配置: baseUrl=" + visionConfig->baseUrl + ", apiKey长度=" + std::to_string(visionConfig->apiKey.length()));
+                // 使用 createProviderWithModel 确保使用正确的模型名称
+                visionProvider = providerMgr.createProviderWithModel(g_visionProvider, g_visionModel);
+            } else {
+                addLog("错误: 找不到视觉模型配置: " + g_visionProvider);
             }
-            visionProvider = providerMgr.getCurrentProvider();
-            providerMgr.setCurrentProvider(providerMgr.getCurrentProviderName()); // 切换回主 provider
-            provider = providerMgr.getCurrentProvider();
             
             if (visionProvider) {
                 addLog("视觉模型转述: " + g_visionProvider + (g_visionModel.empty() ? "" : " / " + g_visionModel));
+            } else {
+                addLog("错误: 无法创建视觉模型 provider");
             }
         }
         
@@ -1275,8 +1340,13 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
         ActionExecutor executor;
         std::vector<std::string> actionHistory;
         
-        for (int iter = 0; iter < finalMaxIterations && !g_taskStop; iter++) {
-            addLog("迭代 " + std::to_string(iter + 1) + "/" + std::to_string(finalMaxIterations));
+        int currentIteration = 0;
+        int maxIter = finalMaxIterations;
+        
+        while (currentIteration < maxIter && !g_taskStop) {
+            addLog("迭代 " + std::to_string(currentIteration + 1) + "/" + std::to_string(maxIter));
+            StatusWindow::getInstance().setIteration(currentIteration + 1, maxIter);
+            StatusWindow::getInstance().addLog("迭代 " + std::to_string(currentIteration + 1));
             
             std::string systemPrompt;
             std::string userMessage;
@@ -1307,8 +1377,12 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                     }
                 }
                 
+                if (g_taskStop) break;
+                
                 addLog("发送请求到 AI...");
                 auto [success, response] = provider->sendMessageWithImages(userContent, {screenshotPath}, systemPrompt);
+                
+                if (g_taskStop) break;
                 
                 if (!success) {
                     addLog("AI 请求失败: " + provider->getLastError());
@@ -1331,6 +1405,46 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 if (g_taskStop) break;
                 
                 addLog("执行动作: " + action.action);
+                StatusWindow::getInstance().setCurrentAction(action.action);
+                StatusWindow::getInstance().addLog(action.action);
+                
+                // 设置动作详细信息
+                std::string detail;
+                auto& fields = action.fields;
+                if (action.action == "Click" || action.action == "DoubleClick") {
+                    if (fields.count("x") && fields.count("y")) {
+                        detail = "位置: (" + fields["x"] + ", " + fields["y"] + ")";
+                    }
+                    if (action.target.has_value()) {
+                        detail += (detail.empty() ? std::string() : " ") + "目标: " + action.target.value();
+                    }
+                } else if (action.action == "Type") {
+                    if (fields.count("text")) {
+                        std::string text = fields["text"];
+                        if (text.length() > 30) text = text.substr(0, 30) + "...";
+                        detail = "文本: " + text;
+                    }
+                } else if (action.action == "Scroll") {
+                    if (fields.count("direction")) {
+                        detail = "方向: " + fields["direction"];
+                        if (fields.count("distance")) detail += ", 距离: " + fields["distance"];
+                    }
+                } else if (action.action == "Wait") {
+                    if (fields.count("duration")) {
+                        detail = "时长: " + fields["duration"] + "ms";
+                    }
+                } else if (action.action == "Launch") {
+                    if (fields.count("app")) {
+                        detail = "应用: " + fields["app"];
+                    }
+                } else if (action.action == "MCP_Tool") {
+                    if (fields.count("server") && fields.count("tool")) {
+                        detail = "工具: " + fields["server"] + "/" + fields["tool"];
+                    }
+                } else if (action.target.has_value()) {
+                    detail = "目标: " + action.target.value();
+                }
+                StatusWindow::getInstance().setActionDetail(detail);
                 
                 auto result = executor.execute(action);
                 
@@ -1345,6 +1459,7 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 }
                 actionHistory.push_back(historyEntry);
                 addLog(action.action + " -> " + (result.success ? "成功" : "失败"));
+                StatusWindow::getInstance().addLog(result.success ? "✓ 成功" : "✗ 失败");
                 
                 // 不区分大小写检查 Stop/Finish
                 std::string actionLower = action.action;
@@ -1369,40 +1484,36 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 // 如果配置了视觉模型转述，使用视觉模型
                 if (visionProvider) {
                     addLog("正在截取屏幕并由视觉模型转述...");
+                    addLog("视觉模型提供商: " + g_visionProvider);
+                    addLog("视觉模型名称: " + (g_visionModel.empty() ? "(默认)" : g_visionModel));
                     
                     std::string screenshotPath = "temp/screenshot.png";
-                    capture_screen(screenshotPath);
+                    capture_screen_compressed(screenshotPath, 1280);  // 使用压缩截图，最大宽度1280
                     
-                    std::string visionSystemPrompt = R"(# 屏幕内容描述助手
-
-你是一个屏幕内容描述助手。请详细描述当前屏幕显示的内容。
-
-要求：
-1. 描述当前活动的窗口和其主要内容
-2. 列出所有可见的控件（按钮、输入框、菜单等）及其位置
-3. 描述当前界面状态（是否有弹窗、加载状态等）
-4. 使用中文描述
-
-输出格式：
-【窗口标题】xxx
-【主要内容】xxx
-【控件列表】
-- 按钮 "名称" 位置: (x, y)
-- 输入框 "名称" 位置: (x, y)
-...
-【界面状态】xxx
-)";
-                    
-                    auto [visionSuccess, visionResponse] = visionProvider->sendMessageWithImages(
-                        "请详细描述以下截图中的屏幕内容：", {screenshotPath}, visionSystemPrompt);
-                    
-                    if (visionSuccess && !visionResponse.empty()) {
-                        addLog("视觉模型转述完成");
-                        userContent = "\n\n【屏幕内容描述（由视觉模型生成）】\n" + visionResponse;
-                    } else {
-                        addLog("视觉模型转述失败，回退到控件列表模式");
+                    // 检查截图文件是否存在
+                    std::ifstream checkFile(screenshotPath);
+                    if (!checkFile.good()) {
+                        addLog("截图文件不存在，回退到控件列表模式");
                         std::string controlList = getControlListDescription();
                         userContent = "\n\n【当前屏幕控件信息】\n" + controlList;
+                    } else {
+                        checkFile.close();
+                        
+                        std::string visionSystemPrompt = "你是屏幕描述助手。简洁描述屏幕内容，格式：\n【窗口】标题\n【内容】主要内容\n【控件】按钮/输入框名称和位置\n【状态】界面状态\n每项不超过50字。";
+                        
+                        addLog("正在发送请求到视觉模型...");
+                        auto [visionSuccess, visionResponse] = visionProvider->sendMessageWithImages(
+                            "简洁描述截图内容：", {screenshotPath}, visionSystemPrompt);
+                        
+                        if (visionSuccess && !visionResponse.empty()) {
+                            addLog("视觉模型转述完成，响应长度: " + std::to_string(visionResponse.length()));
+                            userContent = "\n\n【屏幕内容描述（由视觉模型生成）】\n" + visionResponse;
+                        } else {
+                            std::string errorMsg = visionProvider->getLastError();
+                            addLog("视觉模型转述失败: " + errorMsg);
+                            std::string controlList = getControlListDescription();
+                            userContent = "\n\n【当前屏幕控件信息】\n" + controlList;
+                        }
                     }
                 } else {
                     std::string controlList = getControlListDescription();
@@ -1422,8 +1533,12 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 std::vector<ChatMessage> messages;
                 messages.push_back(ChatMessage("user", userContent));
                 
+                if (g_taskStop) break;
+                
                 addLog("发送请求到 AI...");
                 auto [success, response] = provider->sendMessage(messages, systemPrompt);
+                
+                if (g_taskStop) break;
                 
                 if (!success) {
                     addLog("AI 请求失败");
@@ -1446,6 +1561,46 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 if (g_taskStop) break;
                 
                 addLog("执行动作: " + action.action);
+                StatusWindow::getInstance().setCurrentAction(action.action);
+                StatusWindow::getInstance().addLog(action.action);
+                
+                // 设置动作详细信息
+                std::string detail2;
+                auto& fields2 = action.fields;
+                if (action.action == "Click" || action.action == "DoubleClick") {
+                    if (fields2.count("x") && fields2.count("y")) {
+                        detail2 = "位置: (" + fields2["x"] + ", " + fields2["y"] + ")";
+                    }
+                    if (action.target.has_value()) {
+                        detail2 += (detail2.empty() ? std::string() : " ") + "目标: " + action.target.value();
+                    }
+                } else if (action.action == "Type") {
+                    if (fields2.count("text")) {
+                        std::string text = fields2["text"];
+                        if (text.length() > 30) text = text.substr(0, 30) + "...";
+                        detail2 = "文本: " + text;
+                    }
+                } else if (action.action == "Scroll") {
+                    if (fields2.count("direction")) {
+                        detail2 = "方向: " + fields2["direction"];
+                        if (fields2.count("distance")) detail2 += ", 距离: " + fields2["distance"];
+                    }
+                } else if (action.action == "Wait") {
+                    if (fields2.count("duration")) {
+                        detail2 = "时长: " + fields2["duration"] + "ms";
+                    }
+                } else if (action.action == "Launch") {
+                    if (fields2.count("app")) {
+                        detail2 = "应用: " + fields2["app"];
+                    }
+                } else if (action.action == "MCP_Tool") {
+                    if (fields2.count("server") && fields2.count("tool")) {
+                        detail2 = "工具: " + fields2["server"] + "/" + fields2["tool"];
+                    }
+                } else if (action.target.has_value()) {
+                    detail2 = "目标: " + action.target.value();
+                }
+                StatusWindow::getInstance().setActionDetail(detail2);
                 
                 auto result = executor.execute(action);
                 
@@ -1460,6 +1615,7 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 }
                 actionHistory.push_back(historyEntry);
                 addLog(action.action + " -> " + (result.success ? "成功" : "失败"));
+                StatusWindow::getInstance().addLog(result.success ? "✓ 成功" : "✗ 失败");
                 
                 // 不区分大小写检查 Stop/Finish
                 std::string actionLower = action.action;
@@ -1469,10 +1625,40 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                     break;
                 }
             }
+            
+            currentIteration++;
+            
+            // 达到最大迭代次数时询问是否继续
+            if (!g_taskStop && currentIteration >= maxIter) {
+                HWND consoleWnd = GetConsoleWindow();
+                if (consoleWnd) {
+                    ShowWindow(consoleWnd, SW_RESTORE);
+                    SetForegroundWindow(consoleWnd);
+                }
+                
+                int msgResult = MessageBoxW(
+                    nullptr,
+                    L"已达到最大迭代次数，任务可能未完成。\n\n是否继续执行？",
+                    L"Open-Aries-AI - 任务执行",
+                    MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND
+                );
+                
+                if (msgResult == IDYES) {
+                    addLog("用户选择继续执行任务");
+                    maxIter += 10;
+                    if (consoleWnd) {
+                        ShowWindow(consoleWnd, SW_MINIMIZE);
+                    }
+                } else {
+                    addLog("用户选择结束任务");
+                    break;
+                }
+            }
         }
         
         g_taskRunning = false;
         addLog("任务执行结束");
+        StatusWindow::getInstance().destroy();
     }).detach();
     
     web::HttpResponse res;
@@ -1500,16 +1686,27 @@ web::HttpResponse handleTaskStatus(const web::HttpRequest& req) {
 }
 
 web::HttpResponse handleCheckUpdate(const web::HttpRequest& req) {
-    std::string currentVersion = "v1.3.0.1";
+    std::string currentVersion = "v1.3.1";
     std::string latestVersion = "";
     bool hasUpdate = false;
     
+    addLog("正在检查更新...");
     ReleaseInfo info = UpdateChecker::checkForUpdate("https://github.com/yunsjxh/Open-Aries-AI");
+    
+    addLog("更新检查结果: success=" + std::string(info.success ? "true" : "false"));
+    addLog("获取到的版本号: [" + info.version + "]");
+    addLog("当前版本号: [" + currentVersion + "]");
+    addLog("错误信息: " + info.errorMessage);
     
     if (info.success) {
         latestVersion = info.version;
-        if (info.version != currentVersion) {
-            hasUpdate = (info.version > currentVersion);
+        int cmpResult = UpdateChecker::compareVersions(info.version, currentVersion);
+        addLog("版本比较结果: " + std::to_string(cmpResult));
+        if (cmpResult == 0) {
+            // 版本相同，统一使用当前版本号格式
+            latestVersion = currentVersion;
+        } else if (cmpResult > 0) {
+            hasUpdate = true;
         }
     }
     
@@ -1567,6 +1764,9 @@ int main() {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
     
+    // 初始化日志文件（清空旧日志）
+    initLogFile();
+    
     std::cout << R"(
       ___           ___                       ___           ___                    ___                 
       /\  \         /\  \          ___        /\  \         /\  \                  /\  \          ___   
@@ -1580,7 +1780,7 @@ int main() {
       /:/  /       |:|  |       \/__/        \:\__\        \::/  /                 /:/  /      \/__/    
       \/__/         \|__|                     \/__/         \/__/                  \/__/
 )" << std::endl;
-    std::cout << "  Open-Aries-AI - Web 服务器  版本 v1.3.0.1" << std::endl;
+    std::cout << "  Open-Aries-AI - Web 服务器  版本 v1.3.1" << std::endl;
     std::cout << std::endl;
     
     CreateDirectoryA("temp", NULL);

@@ -528,8 +528,12 @@ private:
     // 执行获取已安装应用列表
     ExecutionResult executeInstalled(const ParsedAgentAction& action) {
         log("执行操作: 获取已安装应用列表");
-        // 实际获取逻辑在主程序中处理
-        return ExecutionResult(true, "已请求获取应用列表");
+        
+        // 真正获取已安装应用列表
+        auto apps = AppManager::getInstalledApps();
+        std::string appsList = AppManager::getAppsListString(apps);
+        
+        return ExecutionResult(true, "获取到 " + std::to_string(apps.size()) + " 个已安装应用\n" + appsList);
     }
 
     // 执行启动应用

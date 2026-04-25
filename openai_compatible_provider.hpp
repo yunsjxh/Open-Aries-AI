@@ -179,6 +179,10 @@ public:
         const std::vector<std::string>& imagePaths,
         const std::string& systemPrompt = "") override {
         
+        std::cerr << "[调试] sendMessageWithImages: model=" << modelName_ << ", baseUrl=" << baseUrl_ << std::endl;
+        std::cerr << "[调试] sendMessageWithImages: apiKey长度=" << apiKey_.length() << std::endl;
+        std::cerr << "[调试] sendMessageWithImages: imagePaths数量=" << imagePaths.size() << std::endl;
+        
         std::ostringstream json;
         json << "{";
         json << "\"model\":\"" << escapeJson(modelName_) << "\",";
@@ -200,17 +204,30 @@ public:
         json << "{\"type\":\"text\",\"text\":\"" << escapeJson(text) << "\"}";
         
         // Add images
+        int imageCount = 0;
         for (const auto& imagePath : imagePaths) {
             std::string base64Image = readFileAsBase64(imagePath);
+            std::cerr << "[调试] 读取图片: " << imagePath << ", base64长度=" << base64Image.length() << std::endl;
             if (!base64Image.empty()) {
                 json << ",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64," << base64Image << "\"}}";
+                imageCount++;
             }
         }
         
         json << "]}]";
+        json << ",\"max_tokens\":4096";
         json << "}";
         
-        return sendRequest(json.str());
+        std::string jsonBody = json.str();
+        std::cerr << "[调试] 请求体大小: " << jsonBody.length() << " bytes" << std::endl;
+        std::cerr << "[调试] 请求体前500字符: " << jsonBody.substr(0, 500) << "..." << std::endl;
+        
+        auto result = sendRequest(jsonBody);
+        std::cerr << "[调试] 请求结果: success=" << (result.first ? "true" : "false") << std::endl;
+        if (!result.first) {
+            std::cerr << "[调试] 错误信息: " << lastError_ << std::endl;
+        }
+        return result;
     }
     
     std::string getLastError() const override {
@@ -385,7 +402,7 @@ private:
             return {false, ""};
         }
         
-        DWORD timeout = 60000;
+        DWORD timeout = 120000;  // 增加到 120 秒
         InternetSetOptionA(hRequest, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
         InternetSetOptionA(hRequest, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
         
@@ -465,9 +482,9 @@ private:
                     if (code != 0) {
                         size_t msgStart = response.find("\"", msgPos + 10);
                         if (msgStart != std::string::npos) {
-                            lastError_ = extractJsonString(response, msgStart);
+                            lastError_ = extractJsonString(response, msgStart) + " [完整响应: " + response.substr(0, 500) + "...]";
                         } else {
-                            lastError_ = "API error (code: " + std::to_string(code) + ")";
+                            lastError_ = "API error (code: " + std::to_string(code) + ") [响应: " + response.substr(0, 500) + "...]";
                         }
                         return {false, ""};
                     }
