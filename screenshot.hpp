@@ -9,44 +9,51 @@ inline void get_screen_size(int& width, int& height) {
     height = GetSystemMetrics(SM_CYSCREEN);
 }
 
-inline bool save_bitmap_to_png(HBITMAP hBitmap, const std::string& filepath) {
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
-    
-    bool result = false;
-    {
-        Gdiplus::Bitmap bitmap(hBitmap, NULL);
-        CLSID pngClsid = {0};
-        bool foundEncoder = false;
-        
-        UINT numEncoders = 0;
-        UINT size = 0;
-        Gdiplus::GetImageEncodersSize(&numEncoders, &size);
-        if (size > 0) {
-            Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)malloc(size);
-            if (pImageCodecInfo) {
-                Gdiplus::GetImageEncoders(numEncoders, size, pImageCodecInfo);
-                
-                for (UINT i = 0; i < numEncoders; i++) {
-                    if (wcscmp(pImageCodecInfo[i].MimeType, L"image/png") == 0) {
-                        pngClsid = pImageCodecInfo[i].Clsid;
-                        foundEncoder = true;
-                        break;
-                    }
-                }
-                free(pImageCodecInfo);
-            }
-        }
-        
-        if (foundEncoder) {
-            std::wstring wfilepath(filepath.begin(), filepath.end());
-            result = (bitmap.Save(wfilepath.c_str(), &pngClsid, NULL) == Gdiplus::Ok);
+// GDI+ 单次初始化 + PNG 编码器缓存
+inline bool get_png_encoder(CLSID& clsid) {
+    static CLSID cached = {};
+    static bool found = false;
+    if (found) { clsid = cached; return true; }
+
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (!size) return false;
+
+    auto* info = (Gdiplus::ImageCodecInfo*)malloc(size);
+    if (!info) return false;
+
+    Gdiplus::GetImageEncoders(num, size, info);
+    for (UINT i = 0; i < num; i++) {
+        if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+            cached = info[i].Clsid;
+            found = true;
+            break;
         }
     }
-    
-    Gdiplus::GdiplusShutdown(gdiplusToken);
-    return result;
+    free(info);
+    clsid = cached;
+    return found;
+}
+
+inline void ensure_gdiplus() {
+    static ULONG_PTR token = 0;
+    static bool init = false;
+    if (!init) {
+        Gdiplus::GdiplusStartupInput inp;
+        Gdiplus::GdiplusStartup(&token, &inp, NULL);
+        init = true;
+    }
+}
+
+inline bool save_bitmap_to_png(HBITMAP hBitmap, const std::string& filepath) {
+    ensure_gdiplus();
+
+    CLSID pngClsid;
+    if (!get_png_encoder(pngClsid)) return false;
+
+    Gdiplus::Bitmap bitmap(hBitmap, NULL);
+    std::wstring wpath(filepath.begin(), filepath.end());
+    return bitmap.Save(wpath.c_str(), &pngClsid, NULL) == Gdiplus::Ok;
 }
 
 inline bool capture_screen(const std::string& filepath) {

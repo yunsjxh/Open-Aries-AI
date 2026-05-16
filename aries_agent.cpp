@@ -10,6 +10,8 @@
 #include "update_checker.hpp"
 #include "ui_automation.hpp"
 #include "mcp_client.hpp"
+#include "logger.hpp"
+#include "status_window.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <windows.h>
@@ -23,33 +25,8 @@
 
 using namespace aries;
 
-const std::string LOG_FILE = "aries_agent.log";
-const std::string CURRENT_VERSION = "v1.3.0.1";
+const std::string CURRENT_VERSION = "v1.3.2";
 const std::string GITHUB_REPO = "https://github.com/yunsjxh/Open-Aries-AI/releases";
-
-std::string getCurrentTime() {
-    auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    return oss.str();
-}
-
-void logMessage(const std::string& message) {
-    std::ofstream logFile(LOG_FILE, std::ios::app);
-    if (logFile.is_open()) {
-        logFile << "[" << getCurrentTime() << "] " << message << std::endl;
-        logFile.close();
-    }
-}
-
-void clearLog() {
-    std::ofstream logFile(LOG_FILE, std::ios::trunc);
-    if (logFile.is_open()) {
-        logFile << "[" << getCurrentTime() << "] 日志已清空" << std::endl;
-        logFile.close();
-    }
-}
 
 // 从AI响应中提取思考过程
 std::string extractThinkingFromResponse(const std::string& response) {
@@ -96,13 +73,13 @@ void setup_console() {
 // 检查更新
 void checkForUpdates(bool autoUpdate = false) {
     std::cout << "正在检查更新..." << std::endl;
-    logMessage("正在检查更新...");
+    Logger::instance().info("正在检查更新...");
     
     ReleaseInfo latest = UpdateChecker::checkForUpdate(GITHUB_REPO);
     
     if (!latest.success) {
         std::cout << "检查更新失败: " << latest.errorMessage << std::endl;
-        logMessage("检查更新失败: " + latest.errorMessage);
+        Logger::instance().info("检查更新失败: " + latest.errorMessage);
         return;
     }
     
@@ -123,7 +100,7 @@ void checkForUpdates(bool autoUpdate = false) {
         std::cout << "========================================" << std::endl;
         std::cout << std::endl;
         
-        logMessage("发现新版本: " + latest.version);
+        Logger::instance().info("发现新版本: " + latest.version);
         
         // 显示更新说明（前500字符）
         if (!latest.body.empty()) {
@@ -199,7 +176,7 @@ void checkForUpdates(bool autoUpdate = false) {
                     std::string agentPath = exeDir + "\\aries_agent.exe.new";
                     if (UpdateChecker::performUpdate(GITHUB_REPO, exePath)) {
                         std::cout << "更新程序已启动，本程序将退出..." << std::endl;
-                        logMessage("更新程序已启动");
+                        Logger::instance().info("更新程序已启动");
                         Sleep(2000);
                         exit(0);
                     } else {
@@ -212,10 +189,10 @@ void checkForUpdates(bool autoUpdate = false) {
         }
     } else if (compareResult == 0) {
         std::cout << "当前已是最新版本 (" << CURRENT_VERSION << ")" << std::endl;
-        logMessage("当前已是最新版本: " + CURRENT_VERSION);
+        Logger::instance().info("当前已是最新版本: " + CURRENT_VERSION);
     } else {
         std::cout << "当前版本 (" << CURRENT_VERSION << ") 比发布版本 (" << latest.version << ") 更新" << std::endl;
-        logMessage("当前版本比发布版本更新");
+        Logger::instance().info("当前版本比发布版本更新");
     }
 }
 
@@ -254,7 +231,7 @@ bool save_bitmap_to_png(HBITMAP hBitmap, const std::string& filepath) {
             std::wstring wfilepath(filepath.begin(), filepath.end());
             result = (bitmap.Save(wfilepath.c_str(), &pngClsid, NULL) == Gdiplus::Ok);
         } else {
-            logMessage("错误: 未找到PNG编码器");
+            Logger::instance().error("未找到PNG编码器");
         }
     }
     
@@ -357,7 +334,7 @@ std::string selectProvider(ProviderManager& manager, const std::string& title = 
     // 检查是否有可用的提供商
     if (providers.empty()) {
         std::cerr << "错误: 没有可用的提供商" << std::endl;
-        logMessage("错误: 没有可用的提供商");
+        Logger::instance().error("没有可用的提供商");
         return "";
     }
     
@@ -450,7 +427,7 @@ std::string selectProvider(ProviderManager& manager, const std::string& title = 
             // 保存 API Key
             if (SecureStorage::saveApiKey(apiKey, providerName)) {
                 std::cout << "提供商添加成功！" << std::endl;
-                logMessage("添加新的提供商: " + providerName);
+                Logger::instance().info("添加新的提供商: " + providerName);
                 
                 // 更新提供商列表
                 providers = manager.getProviderNames();
@@ -791,7 +768,7 @@ int configureProvider(ProviderManager& manager, const std::string& providerName,
 
     if (manager.saveProviderApiKey(providerName, apiKey)) {
         std::cout << "API Key 已安全保存" << std::endl;
-        logMessage(providerName + " API Key 已保存");
+        Logger::instance().info(providerName + " API Key 已保存");
         return 1;
     } else {
         std::cerr << "警告: API Key 保存失败" << std::endl;
@@ -801,9 +778,13 @@ int configureProvider(ProviderManager& manager, const std::string& providerName,
 
 int main(int argc, char* argv[]) {
     setup_console();
-    clearLog();
-    logMessage("程序启动");
-    
+    Logger::instance().init("aries_agent.log");
+    Logger::instance().info("程序启动", -1, "init");
+
+    // 立即显示悬浮窗
+    auto& statusWindow = StatusWindow::getInstance();
+    statusWindow.create();
+
     std::cout << R"(
       ___           ___                       ___           ___                    ___
      /\  \         /\  \          ___        /\  \         /\  \                  /\  \          ___
@@ -832,7 +813,7 @@ int main(int argc, char* argv[]) {
     std::ifstream webExeCheck(webExePath);
     if (!webExeCheck.good()) {
         std::cout << "========================================" << std::endl;
-        std::cout << "【提示】v1.3.0.1 新增 Web GUI 版本！" << std::endl;
+        std::cout << "【提示】v1.3.2 新增 Web GUI 版本！" << std::endl;
         std::cout << "输入 'update' 可下载 aries_web.exe" << std::endl;
         std::cout << "或访问: " << GITHUB_REPO << std::endl;
         std::cout << "========================================" << std::endl;
@@ -862,7 +843,7 @@ int main(int argc, char* argv[]) {
             manager.registerProviderConfig(config);
             // 同时保存 API Key
             manager.saveProviderApiKey(name, apiKey);
-            logMessage("加载自定义提供商: " + name + ", URL: " + baseUrl + ", 模型: " + modelName);
+            Logger::instance().info("加载自定义提供商: " + name + ", URL: " + baseUrl + ", 模型: " + modelName);
         }
     }
 
@@ -871,12 +852,12 @@ int main(int argc, char* argv[]) {
     std::string modelName = "glm-4.6v-flash";
     
     std::cout << "使用提供商: 智谱 AI (zhipu)" << std::endl;
-    logMessage("使用提供商: zhipu");
+    Logger::instance().info("使用提供商: zhipu");
     
     // 默认使用 glm-4.6v-flash 模型
     manager.setCurrentModel(providerName, modelName);
     std::cout << "使用模型: " << modelName << std::endl;
-    logMessage("使用模型: " + modelName);
+    Logger::instance().info("使用模型: " + modelName);
 
     // 配置 API Key
     std::string actualProviderName = providerName;
@@ -916,13 +897,13 @@ int main(int argc, char* argv[]) {
     
     // 设置当前提供商
     std::cout << "正在初始化提供商: " << providerName << std::endl;
-    logMessage("正在初始化提供商: " + providerName);
+    Logger::instance().info("正在初始化提供商: " + providerName);
     
     // 调试：检查配置是否存在
     auto* providerConfig = manager.getConfig(providerName);
     if (!providerConfig) {
         std::cerr << "错误: 找不到提供商配置 (" << providerName << ")" << std::endl;
-        logMessage("错误: 找不到提供商配置 (" + providerName + ")");
+        Logger::instance().error("找不到提供商配置 (" + providerName + ")");
         std::cout << "\n按任意键退出..." << std::endl;
         _getch();
         return 1;
@@ -938,7 +919,7 @@ int main(int argc, char* argv[]) {
     
     if (!provider) {
         std::cerr << "错误: 无法初始化 AI 提供商 (" << providerName << ")" << std::endl;
-        logMessage("错误: 无法初始化 AI 提供商 (" + providerName + ")");
+        Logger::instance().error("无法初始化 AI 提供商 (" + providerName + ")");
         std::cout << "\n按任意键退出..." << std::endl;
         _getch();
         return 1;
@@ -955,7 +936,7 @@ int main(int argc, char* argv[]) {
     bool useVision = (isVisionChoice == 'y' || isVisionChoice == 'Y');
     
     std::cout << "模式: " << (useVision ? "视觉模式" : "纯文本模式") << std::endl;
-    logMessage("用户选择模式: " + std::string(useVision ? "视觉模式" : "纯文本模式"));
+    Logger::instance().info("用户选择模式: " + std::string(useVision ? "视觉模式" : "纯文本模式"));
 
     // 如果不使用视觉模式，询问是否配置视觉模型用于转述
     AIProviderPtr visionProvider = nullptr;
@@ -985,7 +966,7 @@ int main(int argc, char* argv[]) {
                 
                 if (visionProvider) {
                     std::cout << "视觉模型已配置: " << visionProvider->getProviderName() << std::endl;
-                    logMessage("视觉模型已配置: " + visionProvider->getProviderName());
+                    Logger::instance().info("视觉模型已配置: " + visionProvider->getProviderName());
                 } else {
                     std::cout << "警告: 视觉模型配置失败，将使用控件列表模式" << std::endl;
                     visionProvider = nullptr;
@@ -1023,12 +1004,13 @@ int main(int argc, char* argv[]) {
         std::string user_goal;
         std::getline(std::cin, user_goal);
         
-        logMessage("用户输入: " + user_goal);
+        Logger::instance().info("用户输入: " + user_goal);
         
         if (user_goal == "quit" || user_goal == "exit") {
-            logMessage("用户退出");
+            Logger::instance().info("用户退出");
             // 断开所有 MCP 服务器
             mcp::MCPClientManager::getInstance().disconnectAll();
+            statusWindow.destroy();
             return 0;
         }
         
@@ -1078,10 +1060,10 @@ int main(int argc, char* argv[]) {
                         if (client) {
                             std::cout << "可用工具数量: " << client->getTools().size() << std::endl;
                         }
-                        logMessage("MCP 服务器连接成功: " + serverName);
+                        Logger::instance().info("MCP 服务器连接成功: " + serverName);
                     } else {
                         std::cout << "连接失败: " << mcpManager.getLastError() << std::endl;
-                        logMessage("MCP 服务器连接失败: " + serverName + " - " + mcpManager.getLastError());
+                        Logger::instance().info("MCP 服务器连接失败: " + serverName + " - " + mcpManager.getLastError());
                     }
                 } else if (mcpChoice == '2') {
                     std::cout << "\n输入服务器名称: ";
@@ -1102,10 +1084,10 @@ int main(int argc, char* argv[]) {
                         if (client) {
                             std::cout << "可用工具数量: " << client->getTools().size() << std::endl;
                         }
-                        logMessage("HTTP MCP 服务器连接成功: " + serverName);
+                        Logger::instance().info("HTTP MCP 服务器连接成功: " + serverName);
                     } else {
                         std::cout << "连接失败: " << mcpManager.getLastError() << std::endl;
-                        logMessage("HTTP MCP 服务器连接失败: " + serverName + " - " + mcpManager.getLastError());
+                        Logger::instance().info("HTTP MCP 服务器连接失败: " + serverName + " - " + mcpManager.getLastError());
                     }
                 } else if (mcpChoice == '3') {
                     auto& mcpManager = mcp::MCPClientManager::getInstance();
@@ -1124,7 +1106,7 @@ int main(int argc, char* argv[]) {
                 } else if (mcpChoice == '5') {
                     mcp::MCPClientManager::getInstance().disconnectAll();
                     std::cout << "已断开所有 MCP 服务器" << std::endl;
-                    logMessage("断开所有 MCP 服务器");
+                    Logger::instance().info("断开所有 MCP 服务器");
                 } else if (mcpChoice == '6') {
                     break;
                 }
@@ -1145,7 +1127,7 @@ int main(int argc, char* argv[]) {
                 SecureStorage::deleteCustomProvider(name);
             }
             std::cout << "已清除所有保存的 API Key 和配置" << std::endl;
-            logMessage("已清除所有 API Key 和配置");
+            Logger::instance().info("已清除所有 API Key 和配置");
             std::cout << "\n按任意键继续..." << std::endl;
             _getch();
             continue;
@@ -1169,10 +1151,10 @@ int main(int argc, char* argv[]) {
             std::cout << std::endl;
             std::cout << "输入任务目标 (或 'quit' 退出, 'clear' 清除所有API Key, 'provider' 切换提供商): ";
             std::getline(std::cin, user_goal);
-            logMessage("用户输入: " + user_goal);
+            Logger::instance().info("用户输入: " + user_goal);
             
             if (user_goal == "quit" || user_goal == "exit") {
-                logMessage("用户退出");
+                Logger::instance().info("用户退出");
                 return 0;
             }
             
@@ -1188,7 +1170,7 @@ int main(int argc, char* argv[]) {
                     SecureStorage::deleteCustomProvider(name);
                 }
                 std::cout << "已清除所有保存的 API Key 和配置" << std::endl;
-                logMessage("已清除所有 API Key 和配置");
+                Logger::instance().info("已清除所有 API Key 和配置");
                 std::cout << "\n按任意键继续..." << std::endl;
                 _getch();
                 continue;
@@ -1199,7 +1181,7 @@ int main(int argc, char* argv[]) {
                 std::cout << std::endl;
                 std::cout << "输入任务目标: ";
                 std::getline(std::cin, user_goal);
-                logMessage("用户输入: " + user_goal);
+                Logger::instance().info("用户输入: " + user_goal);
             }
         }
 
@@ -1222,24 +1204,102 @@ int main(int argc, char* argv[]) {
         int totalSteps = 0;  // 总步数计数器（不重置）
         bool continueExecution = true;
         bool shouldRetry = false;  // 重试标志
-        
+
+        statusWindow.setStopCallback([&continueExecution]() {
+            continueExecution = false;
+        });
+
+        // ── AI 规划阶段 ──
+        std::string planContext;
+        {
+            std::cout << "\n=== 正在生成 AI 执行计划 ===" << std::endl;
+            Logger::instance().info("正在生成 AI 执行计划...", -1, "plan");
+
+            std::string planningPrompt = PromptTemplates::buildPlanningPrompt(
+                user_goal, screenWidth, screenHeight);
+
+            std::pair<bool, std::string> planResult;
+            if (useVision) {
+                std::string planScreenshotPath = "plan_screenshot.png";
+                if (capture_screen(planScreenshotPath)) {
+                    planResult = provider->sendMessageWithImages(
+                        planningPrompt, {planScreenshotPath},
+                        "你是一个任务规划助手，请用中文制定计划。");
+                    DeleteFileA(planScreenshotPath.c_str());
+                } else {
+                    std::cerr << "Warning: 截图失败，使用纯文本规划" << std::endl;
+                    planResult = provider->sendMessage(
+                        {{"user", planningPrompt}},
+                        "你是一个任务规划助手，请用中文制定计划。");
+                }
+            } else {
+                planResult = provider->sendMessage(
+                    {{"user", planningPrompt}},
+                    "你是一个任务规划助手，请用中文制定计划。");
+            }
+
+            if (planResult.first && !planResult.second.empty()) {
+                ActionParser planParser;
+                ParsedPlan plan = planParser.parsePlan(planResult.second);
+
+                if (plan.isValid()) {
+                    std::cout << "\n+------------------------------------------+" << std::endl;
+                    std::cout << "|           AI 执行计划                     |" << std::endl;
+                    std::cout << "+------------------------------------------+" << std::endl;
+                    for (size_t i = 0; i < plan.steps.size(); i++) {
+                        std::cout << "| " << (i + 1) << ". " << plan.steps[i];
+                        size_t len = plan.steps[i].length();
+                        size_t maxW = 38;
+                        if (len < maxW) std::cout << std::string(maxW - len, ' ');
+                        std::cout << " |" << std::endl;
+                    }
+                    std::cout << "+------------------------------------------+" << std::endl;
+
+                    planContext = "\n\n【AI 执行计划 -- 请按计划逐步执行】\n";
+                    for (size_t i = 0; i < plan.steps.size(); i++) {
+                        planContext += std::to_string(i + 1) + ". " + plan.steps[i] + "\n";
+                    }
+                    planContext += "\n请根据实际情况灵活调整。";
+
+                    statusWindow.setPlanSteps(plan.steps);
+                    Logger::instance().info("AI 计划生成成功，" + std::to_string(plan.steps.size()) + " 步", -1, "plan");
+
+                    auto planUsage = provider->getLastTokenUsage();
+                    if (planUsage.valid()) {
+                        statusWindow.setTokenUsage(
+                            planUsage.prompt_tokens,
+                            planUsage.completion_tokens,
+                            planUsage.total_tokens);
+                    }
+                } else {
+                    std::cout << "Warning: 无法解析执行计划，直接执行" << std::endl;
+                    Logger::instance().warn("无法解析 AI 执行计划", -1, "plan");
+                }
+            } else {
+                std::cout << "Warning: AI 规划请求失败，直接执行" << std::endl;
+                Logger::instance().warn("AI 规划请求失败", -1, "plan");
+            }
+        }
+
         while (continueExecution) {
         std::cout << std::endl;
-        
-        // 如果不是重试，且不是第一步，等待1秒
-        if (!shouldRetry && totalSteps > 0) {
-            std::cout << "等待 1 秒..." << std::endl;
-            Sleep(1000);
-        }
-        
+
+        Logger::instance().setRoundId(iteration + 1);
+        statusWindow.setIteration(iteration + 1, max_iterations);
+        statusWindow.addLog("迭代 " + std::to_string(iteration + 1));
+        statusWindow.setCurrentAction("");
+
         // 重置重试标志
         shouldRetry = false;
 
         std::cout << "=== 迭代 " << (iteration + 1) << "/" << max_iterations << " ===" << std::endl;
-        logMessage("=== 迭代 " + std::to_string(iteration + 1) + "/" + std::to_string(max_iterations) + " ===");
+        Logger::instance().info("迭代开始", iteration + 1, "task");
 
         std::string system_prompt;
         std::string user_message = "任务目标: " + user_goal;
+        if (!planContext.empty()) {
+            user_message += planContext;
+        }
         std::pair<bool, std::string> result;
         std::string screenshot_path = "screenshot.png";
         
@@ -1249,14 +1309,14 @@ int main(int argc, char* argv[]) {
             
             if (!capture_screen(screenshot_path)) {
                 std::cerr << "Error: 截屏失败" << std::endl;
-                logMessage("错误: 截屏失败");
+                Logger::instance().error("截屏失败");
                 std::cout << "\n按任意键继续..." << std::endl;
                 _getch();
                 continue;
             }
             
             std::cout << "屏幕已保存到: " << screenshot_path << std::endl;
-            logMessage("屏幕已保存");
+            Logger::instance().info("屏幕已保存");
             
             system_prompt = PromptTemplates::buildSystemPrompt(screenWidth, screenHeight, false);
             
@@ -1276,11 +1336,11 @@ int main(int argc, char* argv[]) {
             if (visionProvider) {
                 // 使用视觉模型转述屏幕内容
                 std::cout << "正在截取屏幕并由视觉模型转述..." << std::endl;
-                logMessage("正在截取屏幕并由视觉模型转述");
+                Logger::instance().info("正在截取屏幕并由视觉模型转述");
                 
                 if (!capture_screen(screenshot_path)) {
                     std::cerr << "Error: 截屏失败" << std::endl;
-                    logMessage("错误: 截屏失败");
+                    Logger::instance().error("截屏失败");
                     std::cout << "\n按任意键继续..." << std::endl;
                     _getch();
                     continue;
@@ -1292,7 +1352,7 @@ int main(int argc, char* argv[]) {
                 
                 if (visualDesc.find("Error:") != std::string::npos) {
                     std::cerr << "视觉模型转述失败: " << visualDesc << std::endl;
-                    logMessage("视觉模型转述失败: " + visualDesc);
+                    Logger::instance().info("视觉模型转述失败: " + visualDesc);
                     // 回退到控件列表模式
                     std::cout << "回退到控件列表模式..." << std::endl;
                     std::string controlList = getControlListDescription();
@@ -1314,7 +1374,7 @@ int main(int argc, char* argv[]) {
                     user_message += controlList;
                 } else {
                     std::cout << "视觉模型转述完成" << std::endl;
-                    logMessage("视觉模型转述完成");
+                    Logger::instance().info("视觉模型转述完成");
                     system_prompt = PromptTemplates::buildTextModeSystemPrompt();
                     
                     // 添加 MCP 服务器信息
@@ -1337,7 +1397,7 @@ int main(int argc, char* argv[]) {
             } else {
                 // 使用控件列表模式
                 std::cout << "正在获取控件列表..." << std::endl;
-                logMessage("正在获取控件列表（纯文本模式）");
+                Logger::instance().info("正在获取控件列表（纯文本模式）");
                 
                 std::string controlList = getControlListDescription();
                 
@@ -1405,84 +1465,111 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "正在发送请求到 AI..." << std::endl;
-        logMessage("发送请求到 AI...");
+        Logger::instance().info("发送AI请求", iteration + 1, "ai_call");
 
         if (useVision) {
-            result = provider->sendMessageWithImages(user_message, {screenshot_path}, system_prompt);
-            DeleteFileA(screenshot_path.c_str());
+            result = [&]() {
+                auto _t = Logger::ScopedTimer("ai_call");
+                // 使用流式请求，实时显示 AI 思考过程
+                auto r = provider->sendMessageWithImagesStream(user_message, {screenshot_path},
+                    [](const std::string& delta, bool done) {
+                        if (!delta.empty()) std::cout << delta << std::flush;
+                    }, system_prompt);
+                DeleteFileA(screenshot_path.c_str());
+                return r;
+            }();
         } else {
-            std::vector<ChatMessage> messages;
-            messages.emplace_back("user", user_message);
-            result = provider->sendMessage(messages, system_prompt);
+            result = [&]() {
+                auto _t = Logger::ScopedTimer("ai_call");
+                std::vector<ChatMessage> messages;
+                messages.emplace_back("user", user_message);
+                // 使用流式请求，实时显示 AI 响应
+                auto r = provider->sendMessageStream(messages,
+                    [](const std::string& delta, bool done) {
+                        if (!delta.empty()) std::cout << delta << std::flush;
+                    }, system_prompt);
+                return r;
+            }();
+        }
+
+        // 记录 Token 用量
+        {
+            auto usage = provider->getLastTokenUsage();
+            if (usage.valid()) {
+                Logger::instance().setTokenUsage(usage.total_tokens);
+                statusWindow.setTokenUsage(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
+                std::cout << std::endl << "[Token: " << usage.prompt_tokens << " + "
+                          << usage.completion_tokens << " = " << usage.total_tokens << "]"
+                          << std::endl;
+            }
         }
 
         if (result.first) {
             std::cout << std::endl;
-            std::cout << "AI 响应:" << std::endl;
             std::string ai_response = result.second;
-            std::cout << ai_response << std::endl;
-            logMessage("AI 响应: " + ai_response);
+            Logger::instance().info("AI响应完成", iteration + 1, "ai_call");
 
             ParsedAgentAction action = parser.parse(ai_response);
             
             if (!action.isValid()) {
                 std::cerr << "无法解析 AI 响应" << std::endl;
-                logMessage("错误: 无法解析 AI 响应");
+                Logger::instance().error("无法解析 AI 响应");
                 continue;
             }
 
             std::cout << std::endl;
             std::cout << "解析到动作: " << action.action << std::endl;
-            logMessage("解析到动作: " + action.action);
+            Logger::instance().info("解析到动作: " + action.action);
+            statusWindow.setCurrentAction(action.action);
+            statusWindow.addLog(action.action);
             
             // 提取思考过程并保存到历史记录
             std::string thinking = extractThinkingFromResponse(ai_response);
             ActionHistory history;
             history.action = action.raw;
             history.thinking = thinking;
-            history.timestamp = getCurrentTime();
+            // timestamp populated below via Logger (milestone only, not used in feedback)
             actionHistory.push_back(history);
             // 保存所有历史，不再限制数量
 
             if (action.action == "Installed") {
                 std::cout << "正在获取已安装应用列表..." << std::endl;
-                logMessage("获取已安装应用列表...");
+                Logger::instance().info("获取已安装应用列表...");
                 installedApps = AppManager::getInstalledApps();
                 appsListString = AppManager::getAppsListString(installedApps);
                 appsLoaded = true;
                 std::cout << "已获取 " << installedApps.size() << " 个应用" << std::endl;
-                logMessage("已获取 " + std::to_string(installedApps.size()) + " 个应用");
+                Logger::instance().info("已获取 " + std::to_string(installedApps.size()) + " 个应用");
                 
                 std::string appName = action.fields.count("app") ? action.fields.at("app") : "";
                 if (!appName.empty()) {
                     std::cout << "尝试启动应用: " << appName << std::endl;
-                    logMessage("尝试启动应用: " + appName);
+                    Logger::instance().info("尝试启动应用: " + appName);
                     auto* app = AppManager::findApp(installedApps, appName);
                     if (app) {
                         if (AppManager::launchApp(*app)) {
                             std::cout << "成功启动应用: " << app->displayName << std::endl;
-                            logMessage("成功启动应用: " + app->displayName);
+                            Logger::instance().info("成功启动应用: " + app->displayName);
                         } else {
                             std::cerr << "启动应用失败: " << app->displayName << std::endl;
-                            logMessage("启动应用失败: " + app->displayName);
+                            Logger::instance().info("启动应用失败: " + app->displayName);
                         }
                     } else {
                         std::cerr << "未找到应用: " << appName << std::endl;
-                        logMessage("未找到应用: " + appName);
+                        Logger::instance().info("未找到应用: " + appName);
                     }
                 }
                 
-                Sleep(1000);
                 continue;
             }
 
             if (action.action == "Launch") {
                 std::string appName = action.fields.count("app") ? action.fields.at("app") : "";
                 if (!appName.empty()) {
-                    logMessage("Launch 动作，应用: " + appName);
+                    Logger::instance().info("Launch 动作，应用: " + appName);
                     if (!appsLoaded) {
                         std::cout << "正在获取已安装应用列表..." << std::endl;
-                        logMessage("获取已安装应用列表...");
+                        Logger::instance().info("获取已安装应用列表...");
                         installedApps = AppManager::getInstalledApps();
                         appsListString = AppManager::getAppsListString(installedApps);
                         appsLoaded = true;
@@ -1491,19 +1578,19 @@ int main(int argc, char* argv[]) {
                     auto* app = AppManager::findApp(installedApps, appName);
                     if (app) {
                         std::cout << "找到应用，直接启动: " << app->displayName << std::endl;
-                        logMessage("找到应用，直接启动: " + app->displayName);
+                        Logger::instance().info("找到应用，直接启动: " + app->displayName);
                         // 记录详细应用信息到日志
-                        logMessage("应用详细信息:");
-                        logMessage("  name: " + app->name);
-                        logMessage("  displayName: " + app->displayName);
-                        logMessage("  executablePath: " + app->executablePath);
-                        logMessage("  installLocation: " + app->installLocation);
-                        logMessage("  uninstallString: " + app->uninstallString);
+                        Logger::instance().info("应用详细信息:");
+                        Logger::instance().info("  name: " + app->name);
+                        Logger::instance().info("  displayName: " + app->displayName);
+                        Logger::instance().info("  executablePath: " + app->executablePath);
+                        Logger::instance().info("  installLocation: " + app->installLocation);
+                        Logger::instance().info("  uninstallString: " + app->uninstallString);
                         
                         // 检查 executablePath 是否是 .ico 文件
                         if (!app->executablePath.empty() && app->executablePath.find(".ico") != std::string::npos) {
                             std::cout << "检测到图标文件，需要获取所有可执行文件列表..." << std::endl;
-                            logMessage("检测到图标文件，获取所有可执行文件列表");
+                            Logger::instance().info("检测到图标文件，获取所有可执行文件列表");
                             
                             // 从 uninstallString 推断安装目录
                             if (!app->uninstallString.empty()) {
@@ -1513,7 +1600,7 @@ int main(int argc, char* argv[]) {
                                     auto exeList = AppManager::getAllExecutablesInDirectory(installDir);
                                     if (!exeList.empty()) {
                                         std::cout << "找到 " << exeList.size() << " 个可执行文件，发送给 AI 判断..." << std::endl;
-                                        logMessage("找到 " + std::to_string(exeList.size()) + " 个可执行文件");
+                                        Logger::instance().info("找到 " + std::to_string(exeList.size()) + " 个可执行文件");
                                         
                                         // 构建 exe 列表字符串
                                         std::string exeListStr = "\n\n该应用的安装目录下有多个可执行文件，请判断应该启动哪个主程序:\n";
@@ -1529,8 +1616,6 @@ int main(int argc, char* argv[]) {
                                         lastExecuteOutput = "应用 '" + app->displayName + "' 的 executablePath 是图标文件。" + exeListStr;
                                         std::cout << lastExecuteOutput << std::endl;
                                         
-                                        // 跳过本次迭代的其他处理，让 AI 在下次迭代中决定
-                                        Sleep(1000);
                                         continue;
                                     }
                                 }
@@ -1539,34 +1624,42 @@ int main(int argc, char* argv[]) {
                         
                         if (AppManager::launchApp(*app)) {
                             std::cout << "成功启动应用!" << std::endl;
-                            logMessage("成功启动应用!");
-                            Sleep(1000);
+                            Logger::instance().info("成功启动应用!");
                             continue;
                         } else {
                             std::cerr << "直接启动失败，回退到执行器..." << std::endl;
-                            logMessage("直接启动失败，回退到执行器");
+                            Logger::instance().info("直接启动失败，回退到执行器");
                         }
                     } else {
                         std::cout << "应用列表中未找到，使用执行器启动..." << std::endl;
-                        logMessage("应用列表中未找到，使用执行器启动");
+                        Logger::instance().info("应用列表中未找到，使用执行器启动");
                     }
                 }
             }
 
             // 执行动作（统一通过executor处理所有动作类型）
-            ExecutionResult exec_result = executor.execute(action);
-            
-            logMessage("执行动作: " + action.action + " - " + (exec_result.success ? "成功" : "失败") + " - " + exec_result.message);
+            ExecutionResult exec_result;
+            {
+                auto _t = Logger::ScopedTimer("execute");
+                exec_result = executor.execute(action);
+            }
+
+            if (exec_result.success) {
+                Logger::instance().info(action.action + " 成功", iteration + 1, "execute");
+                if (!exec_result.message.empty() && exec_result.message != "成功") {
+                    Logger::instance().info("结果: " + exec_result.message, iteration + 1, "execute");
+                }
+            } else {
+                Logger::instance().error(action.action + " 失败: " + exec_result.message, iteration + 1, "execute");
+            }
             
             if (exec_result.success && !exec_result.message.empty()) {
                 lastExecuteOutput = exec_result.message;
             }
-            
-            Sleep(500);
-            
+
             if (!exec_result.success) {
                 std::cerr << "执行失败: " << exec_result.message << std::endl;
-                logMessage("执行失败: " + exec_result.message);
+                Logger::instance().error("执行失败: " + exec_result.message, iteration + 1, "execute");
                 
                 // 检查是否是坐标无效错误
                 if (exec_result.message.find("无效的点击坐标") != std::string::npos ||
@@ -1577,7 +1670,7 @@ int main(int argc, char* argv[]) {
                                        "例如: element=[500,300] 或 element=[100,200,300,400]\n" +
                                        "请重新提供正确的坐标。";
                     std::cout << lastExecuteOutput << std::endl;
-                    logMessage("坐标格式错误，已反馈给AI");
+                    Logger::instance().warn("坐标格式错误，已反馈给AI", iteration + 1, "execute");
                     // 继续循环，让AI纠正
                     continue;
                 }
@@ -1585,7 +1678,7 @@ int main(int argc, char* argv[]) {
                 // 所有执行错误都直接反馈给AI，不添加额外提示
                 lastExecuteOutput = exec_result.message;
                 std::cout << "执行失败: " << exec_result.message << std::endl;
-                logMessage("执行错误，已反馈给AI: " + exec_result.message);
+                Logger::instance().warn("执行错误，已反馈给AI: " + exec_result.message, iteration + 1, "execute");
                 // 继续循环，让AI决定下一步
                 continue;
             }
@@ -1595,7 +1688,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "========================================" << std::endl;
                 std::cout << "任务完成!" << std::endl;
                 std::cout << "========================================" << std::endl;
-                logMessage("任务完成!");
+                Logger::instance().info("任务完成", iteration + 1, "task");
                 
                 // 显示完成信息
                 if (!exec_result.message.empty()) {
@@ -1611,7 +1704,7 @@ int main(int argc, char* argv[]) {
         } else {
             std::string errorMsg = provider->getLastError();
             std::cerr << "请求失败: " << errorMsg << std::endl;
-            logMessage("请求失败: " + errorMsg);
+            Logger::instance().error("AI请求失败: " + errorMsg, iteration + 1, "ai_call");
 
             // 检查是否是访问量过大等可重试错误
             if (errorMsg.find("访问量过大") != std::string::npos ||
@@ -1654,14 +1747,13 @@ int main(int argc, char* argv[]) {
             
             if (continueChoice == 'y' || continueChoice == 'Y') {
                 std::cout << "继续执行任务..." << std::endl;
-                logMessage("用户选择继续执行任务");
+                Logger::instance().info("用户选择继续执行任务");
                 iteration = 0; // 重置迭代计数
             } else {
                 continueExecution = false;
             }
         }
 
-        Sleep(1000);
     }
 
     // 任务完成，询问是否返回首页
@@ -1701,11 +1793,12 @@ int main(int argc, char* argv[]) {
     break;
     }
     
-    logMessage("程序结束");
+    Logger::instance().info("程序正常退出", -1, "shutdown");
     std::cout << std::endl;
     std::cout << "感谢使用 Open-Aries-AI!" << std::endl;
     std::cout << "按任意键退出..." << std::endl;
     _getch();
 
+    statusWindow.destroy();
     return 0;
 }

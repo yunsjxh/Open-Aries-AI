@@ -5,6 +5,7 @@
 #include <regex>
 #include <algorithm>
 #include <optional>
+#include <sstream>
 
 namespace aries {
 
@@ -23,6 +24,14 @@ struct ParsedAgentAction {
     bool isValid() const {
         return !action.empty();
     }
+};
+
+// AI 生成的执行计划
+struct ParsedPlan {
+    std::vector<std::string> steps;
+    std::string raw;
+
+    bool isValid() const { return !steps.empty(); }
 };
 
 class ActionParser {
@@ -102,6 +111,45 @@ public:
     // 添加公共接口用于测试解码
     std::string testDecode(const std::string& raw) {
         return decodeUnicodeEscapes(raw);
+    }
+
+    // 从 AI 响应中提取执行计划
+    ParsedPlan parsePlan(const std::string& raw) {
+        std::string decoded = decodeUnicodeEscapes(raw);
+        std::string trimmed = trim(decoded);
+
+        size_t start = trimmed.find("<plan>");
+        size_t end = trimmed.find("</plan>");
+        std::string planContent;
+        if (start != std::string::npos && end != std::string::npos && start < end) {
+            planContent = trim(trimmed.substr(start + 6, end - start - 6));
+        } else {
+            planContent = trimmed;
+        }
+
+        ParsedPlan plan;
+        plan.raw = planContent;
+
+        std::regex stepRegex(R"((\d+)\.\s+)");
+        std::sregex_token_iterator iter(planContent.begin(), planContent.end(), stepRegex, -1);
+        std::sregex_token_iterator endIter;
+        bool first = true;
+        for (; iter != endIter; ++iter) {
+            if (first) { first = false; continue; }
+            std::string step = trim(iter->str());
+            if (!step.empty()) plan.steps.push_back(step);
+        }
+
+        if (plan.steps.empty() && !planContent.empty()) {
+            std::istringstream iss(planContent);
+            std::string line;
+            while (std::getline(iss, line)) {
+                std::string t = trim(line);
+                if (!t.empty()) plan.steps.push_back(t);
+            }
+        }
+
+        return plan;
     }
 
 private:

@@ -233,7 +233,71 @@ public:
     std::string getLastError() const override {
         return lastError_;
     }
-    
+
+    TokenUsage getLastTokenUsage() const override {
+        return lastTokenUsage_;
+    }
+
+    // ── 流式发送消息 ──
+    std::pair<bool, std::string> sendMessageStream(
+        const std::vector<ChatMessage>& messages,
+        StreamDeltaCallback onDelta,
+        const std::string& systemPrompt = "") override {
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"model\":\"" << escapeJson(modelName_) << "\",";
+        json << "\"stream\":true,";
+        json << "\"messages\":[";
+
+        bool first = true;
+        if (!systemPrompt.empty()) {
+            json << "{\"role\":\"system\",\"content\":\"" << escapeJson(systemPrompt) << "\"}";
+            first = false;
+        }
+        for (const auto& msg : messages) {
+            if (!first) json << ",";
+            json << "{\"role\":\"" << msg.role << "\",\"content\":\"" << escapeJson(msg.content) << "\"}";
+            first = false;
+        }
+        json << "]}";
+
+        return sendStreamRequest(json.str(), onDelta);
+    }
+
+    std::pair<bool, std::string> sendMessageWithImagesStream(
+        const std::string& text,
+        const std::vector<std::string>& imagePaths,
+        StreamDeltaCallback onDelta,
+        const std::string& systemPrompt = "") override {
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"model\":\"" << escapeJson(modelName_) << "\",";
+        json << "\"stream\":true,";
+        json << "\"messages\":[";
+
+        bool first = true;
+        if (!systemPrompt.empty()) {
+            json << "{\"role\":\"system\",\"content\":\"" << escapeJson(systemPrompt) << "\"}";
+            first = false;
+        }
+        if (!first) json << ",";
+        json << "{\"role\":\"user\",\"content\":[";
+        json << "{\"type\":\"text\",\"text\":\"" << escapeJson(text) << "\"}";
+        for (const auto& imagePath : imagePaths) {
+            std::string b64 = readFileAsBase64(imagePath);
+            if (!b64.empty()) {
+                json << ",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64," << b64 << "\"}}";
+            }
+        }
+        json << "]}]";
+        json << ",\"max_tokens\":4096";
+        json << "}";
+
+        return sendStreamRequest(json.str(), onDelta);
+    }
+
     // 验证 API Key 是否有效
     bool validateApiKey() {
         // 构建简单的测试请求
@@ -257,6 +321,230 @@ private:
     bool supportsAudio_;
     bool supportsVideo_;
     mutable std::string lastError_;
+    mutable TokenUsage lastTokenUsage_;
+
+    // 从 JSON 中提取 token usage
+    void parseTokenUsage(const std::string& json) {
+        lastTokenUsage_ = TokenUsage();
+        size_t usagePos = json.find("\"usage\"");
+        if (usagePos == std::string::npos) return;
+
+        // prompt_tokens
+        size_t pPos = json.find("\"prompt_tokens\":", usagePos);
+        if (pPos != std::string::npos) {
+            pPos += 17;
+            while (pPos < json.length() && (json[pPos] == ' ' || json[pPos] == '\t')) pPos++;
+            while (pPos < json.length() && json[pPos] >= '0' && json[pPos] <= '9') {
+                lastTokenUsage_.prompt_tokens = lastTokenUsage_.prompt_tokens * 10 + (json[pPos] - '0');
+                pPos++;
+            }
+        }
+
+        // completion_tokens
+        size_t cPos = json.find("\"completion_tokens\":", usagePos);
+        if (cPos != std::string::npos) {
+            cPos += 21;
+            while (cPos < json.length() && (json[cPos] == ' ' || json[cPos] == '\t')) cPos++;
+            while (cPos < json.length() && json[cPos] >= '0' && json[cPos] <= '9') {
+                lastTokenUsage_.completion_tokens = lastTokenUsage_.completion_tokens * 10 + (json[cPos] - '0');
+                cPos++;
+            }
+        }
+
+        // total_tokens
+        size_t tPos = json.find("\"total_tokens\":", usagePos);
+        if (tPos != std::string::npos) {
+            tPos += 15;
+            while (tPos < json.length() && (json[tPos] == ' ' || json[tPos] == '\t')) tPos++;
+            while (tPos < json.length() && json[tPos] >= '0' && json[tPos] <= '9') {
+                lastTokenUsage_.total_tokens = lastTokenUsage_.total_tokens * 10 + (json[tPos] - '0');
+                tPos++;
+            }
+        }
+    }
+
+    // SSE 流式请求
+    std::pair<bool, std::string> sendStreamRequest(const std::string& jsonBody, StreamDeltaCallback onDelta) {
+        std::string url = baseUrl_ + "/chat/completions";
+        lastTokenUsage_ = TokenUsage();
+
+        HINTERNET hInternet = InternetOpenA("AriesAI/1.0", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+        if (!hInternet) {
+            lastError_ = "Failed to initialize WinINet";
+            return {false, ""};
+        }
+
+        char hostName[256] = {};
+        char urlPath[1024] = {};
+        URL_COMPONENTSA urlComp = {};
+        urlComp.dwStructSize = sizeof(urlComp);
+        urlComp.lpszHostName = hostName;
+        urlComp.dwHostNameLength = sizeof(hostName);
+        urlComp.lpszUrlPath = urlPath;
+        urlComp.dwUrlPathLength = sizeof(urlPath);
+
+        if (!InternetCrackUrlA(url.c_str(), 0, 0, &urlComp)) {
+            lastError_ = "Failed to parse URL";
+            InternetCloseHandle(hInternet);
+            return {false, ""};
+        }
+
+        HINTERNET hConnect = InternetConnectA(hInternet, hostName,
+            urlComp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+        if (!hConnect) {
+            lastError_ = "Failed to connect";
+            InternetCloseHandle(hInternet);
+            return {false, ""};
+        }
+
+        const char* acceptTypes[] = {"text/event-stream", "application/json", NULL};
+        DWORD flags = 0;
+        if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
+            flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID |
+                    INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
+        }
+        HINTERNET hRequest = HttpOpenRequestA(hConnect, "POST", urlPath,
+            NULL, NULL, acceptTypes, flags, 0);
+        if (!hRequest) {
+            lastError_ = "Failed to create request";
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hInternet);
+            return {false, ""};
+        }
+
+        DWORD timeout = 180000; // 3 minutes for streaming
+        InternetSetOptionA(hRequest, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+        InternetSetOptionA(hRequest, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
+
+        std::string authHeader = "Authorization: Bearer " + apiKey_;
+        std::string contentType = "Content-Type: application/json";
+        HttpAddRequestHeadersA(hRequest, authHeader.c_str(), (DWORD)authHeader.length(), HTTP_ADDREQ_FLAG_ADD);
+        HttpAddRequestHeadersA(hRequest, contentType.c_str(), (DWORD)contentType.length(), HTTP_ADDREQ_FLAG_ADD);
+
+        if (!HttpSendRequestA(hRequest, NULL, 0, (LPVOID)jsonBody.c_str(), (DWORD)jsonBody.length())) {
+            DWORD err = GetLastError();
+            std::ostringstream oss;
+            oss << "Failed to send request (Error " << err << ")";
+            lastError_ = oss.str();
+            InternetCloseHandle(hRequest);
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hInternet);
+            return {false, ""};
+        }
+
+        // Read SSE stream incrementally
+        std::string fullContent;
+        std::string sseBuffer;
+        char buffer[4096];
+        DWORD bytesRead;
+        bool streamDone = false;
+        size_t consumed = 0;  // cursor avoids O(n²) per-event erase
+
+        while (!streamDone && InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
+            sseBuffer.append(buffer, bytesRead);
+
+            // Process complete SSE events from cursor forward
+            size_t pos = 0;
+            while ((pos = sseBuffer.find("\n\n", consumed)) != std::string::npos) {
+                std::string event = sseBuffer.substr(consumed, pos - consumed);
+                consumed = pos + 2;
+
+                // Parse SSE lines: look for "data: {...}"
+                std::string dataJson;
+                size_t lineStart = 0;
+                while (lineStart < event.length()) {
+                    size_t lineEnd = event.find('\n', lineStart);
+                    if (lineEnd == std::string::npos) lineEnd = event.length();
+                    std::string line = event.substr(lineStart, lineEnd - lineStart);
+
+                    if (line.rfind("data: ", 0) == 0) {
+                        dataJson += line.substr(6);
+                    } else if (line.rfind("data:", 0) == 0) {
+                        dataJson += line.substr(5);
+                    }
+
+                    lineStart = lineEnd + 1;
+                }
+
+                if (dataJson.empty()) continue;
+                if (dataJson == "[DONE]") { streamDone = true; break; }
+
+                // Parse delta content from streaming chunk
+                size_t choicesPos = dataJson.find("\"choices\"");
+                if (choicesPos == std::string::npos) continue;
+
+                size_t deltaPos = dataJson.find("\"delta\"", choicesPos);
+                if (deltaPos == std::string::npos) continue;
+
+                size_t contentPos = dataJson.find("\"content\":", deltaPos);
+                if (contentPos == std::string::npos) continue;
+
+                std::string deltaText = extractJsonString(dataJson, contentPos + 10);
+
+                // Also extract reasoning_content (for zhipu thinking models)
+                size_t reasoningPos = dataJson.find("\"reasoning_content\":", deltaPos);
+                if (reasoningPos != std::string::npos) {
+                    std::string reasoningDelta = extractJsonString(dataJson, reasoningPos + 20);
+                    if (!reasoningDelta.empty() && onDelta) {
+                        onDelta("[思考] " + reasoningDelta + "\n", false);
+                    }
+                }
+
+                if (!deltaText.empty()) {
+                    fullContent += deltaText;
+                    if (onDelta) onDelta(deltaText, false);
+                }
+
+                // Check for usage in final chunk
+                if (dataJson.find("\"usage\"") != std::string::npos) {
+                    parseTokenUsage(dataJson);
+                }
+            }
+
+            // Periodic cleanup: free consumed portion to bound memory
+            if (consumed > 65536) {
+                sseBuffer.erase(0, consumed);
+                consumed = 0;
+            }
+        }
+
+        // If no SSE events were found, treat as non-streaming response
+        if (fullContent.empty() && sseBuffer.size() > consumed) {
+            std::string remaining = sseBuffer.substr(consumed);
+            // Try parsing as regular JSON response
+            if (remaining.find("\"error\"") != std::string::npos) {
+                size_t msgPos = remaining.find("\"message\":\"");
+                if (msgPos != std::string::npos) {
+                    lastError_ = extractJsonString(remaining, msgPos + 10);
+                } else {
+                    lastError_ = "API error";
+                }
+                InternetCloseHandle(hRequest);
+                InternetCloseHandle(hConnect);
+                InternetCloseHandle(hInternet);
+                return {false, ""};
+            }
+
+            fullContent = parseContent(remaining);
+            parseTokenUsage(remaining);
+            if (!fullContent.empty() && onDelta) {
+                onDelta(fullContent, true);
+            }
+        }
+
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+
+        if (onDelta) onDelta("", true); // signal done
+
+        if (fullContent.empty()) {
+            lastError_ = "Empty streaming response";
+            return {false, ""};
+        }
+
+        return {true, fullContent};
+    }
     
     // 从 JSON 中提取字符串值（处理转义引号）
     std::string extractJsonString(const std::string& json, size_t startPos) {
@@ -495,12 +783,13 @@ private:
         std::string content = parseContent(response);
         if (content.empty()) {
             // 调试输出：记录原始响应的前 500 字符
-            std::cerr << "[调试] API 响应解析失败，原始响应: " 
+            std::cerr << "[调试] API 响应解析失败，原始响应: "
                       << response.substr(0, 500) << (response.length() > 500 ? "..." : "") << std::endl;
             lastError_ = "Invalid response format";
             return {false, ""};
         }
-        
+
+        parseTokenUsage(response);
         return {true, content};
     }
 };

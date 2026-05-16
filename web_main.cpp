@@ -9,6 +9,7 @@
 #include "prompt_templates.hpp"
 #include "update_checker.hpp"
 #include "status_window.hpp"
+#include "logger.hpp"
 #include <iostream>
 #include <vector>
 #include <mutex>
@@ -125,6 +126,28 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
         .log-entry.success .log-message { color: var(--success); }
         .log-entry.error .log-message { color: var(--error); }
         .log-entry.warning .log-message { color: var(--warning); }
+        .log-badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:10px; font-weight:600; margin-right:6px; vertical-align:top; }
+        .log-badge.lvl-ERROR { background:rgba(239,68,68,0.15); color:var(--error); }
+        .log-badge.lvl-WARN  { background:rgba(245,158,11,0.15); color:var(--warning); }
+        .log-badge.lvl-INFO  { background:rgba(59,130,246,0.12); color:var(--info); }
+        .log-badge.lvl-DEBUG { background:rgba(107,114,128,0.12); color:var(--text-muted); }
+        .log-phase { font-size:11px; color:var(--text-muted); margin-right:6px; }
+        .log-dur { font-size:10px; color:var(--accent-secondary); margin-left:6px; }
+        .log-tokens { font-size:10px; color:var(--warning); margin-left:6px; }
+        /* Stream */
+        .stream-container { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 16px; max-height: 280px; overflow-y: auto; font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; color: var(--text-secondary); }
+        .stream-placeholder { color: var(--text-muted); font-style: italic; }
+        .plan-container { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 16px; max-height: 280px; overflow-y: auto; font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+        .plan-step { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border-color); }
+        .plan-step:last-child { border-bottom: none; }
+        .plan-step-num { flex-shrink: 0; width: 24px; height: 24px; background: var(--accent-gradient); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
+        .plan-step-text { flex: 1; padding-top: 2px; }
+        .badge { display:inline-block; padding:2px 10px; border-radius:100px; font-size:11px; font-weight:600; background:rgba(99,102,241,0.15); color:var(--accent-secondary); }
+        .completion-banner { display:none; padding:14px 18px; border-radius:var(--radius-md); margin-bottom:16px; font-weight:600; font-size:14px; animation:fadeIn 0.3s ease; }
+        .completion-banner.success { background:rgba(34,197,94,0.12); border:1px solid var(--success); color:var(--success); }
+        .completion-banner.stopped { background:rgba(234,179,8,0.12); border:1px solid #eab308; color:#eab308; }
+        .completion-banner.error { background:rgba(239,68,68,0.12); border:1px solid var(--danger); color:var(--danger); }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(-8px);} to{opacity:1;transform:translateY(0);} }
         .server-grid { display: grid; gap: 16px; }
         .server-card { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 16px; display: flex; justify-content: space-between; align-items: flex-start; }
         .server-info h4 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
@@ -182,7 +205,7 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                     </div>
                     <div>
                         <div class="logo-text">Open-Aries-AI</div>
-                        <div class="logo-version">v1.3.1</div>
+                        <div class="logo-version">v1.3.2</div>
                     </div>
                 </div>
             </div>
@@ -297,6 +320,23 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                             <img id="screenshotPreview" class="screenshot-preview" />
                         </div>
                     </div>
+                    <div class="card" id="planCard" style="display:none;">
+                        <div class="card-header">
+                            <h3 class="card-title"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>AI 执行计划</h3>
+                        </div>
+                        <div class="plan-container" id="planContent">
+                            <div class="stream-placeholder">正在生成执行计划...</div>
+                        </div>
+                    </div>
+                    <div class="card" id="streamCard" style="display:none;">
+                        <div class="card-header">
+                            <h3 class="card-title"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>AI 实时响应 <span id="tokenBadge" class="badge" style="display:none;"></span></h3>
+                        </div>
+                        <div class="stream-container" id="taskStream">
+                            <div class="stream-placeholder">等待 AI 响应...</div>
+                        </div>
+                    </div>
+                    <div class="completion-banner" id="completionBanner"></div>
                     <div class="card">
                         <div class="card-header">
                             <h3 class="card-title"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>执行日志</h3>
@@ -456,25 +496,98 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
             logContainer.appendChild(entry);
             logContainer.scrollTop = logContainer.scrollHeight;
         }
-        let logRefreshInterval = null;
-        let lastLogCount = 0;
-        async function refreshTaskLogs() {
+        let statusInterval = null;
+        let lastLogId = 0;
+        async function refreshStatus() {
             try {
-                const response = await fetch(API_BASE + '/api/logs');
+                const response = await fetch(API_BASE + '/api/task/status');
                 const result = await response.json();
-                if (result.logs && result.logs.length > lastLogCount) {
+
+                // 任务状态检测 — 停止时清除定时器并显示完成横幅
+                if (!result.running && statusInterval) {
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                    document.getElementById('statusText').textContent = '就绪';
+                    document.getElementById('statusDot').classList.remove('error');
+
+                    // 显示完成横幅
+                    var banner = document.getElementById('completionBanner');
+                    if (result.result === 'success') {
+                        banner.className = 'completion-banner success';
+                        banner.innerHTML = '&#10003; 任务执行完成';
+                    } else if (result.result === 'max_iterations') {
+                        banner.className = 'completion-banner stopped';
+                        banner.innerHTML = '&#9888; 已达最大迭代次数，任务结束';
+                    } else {
+                        banner.className = 'completion-banner stopped';
+                        banner.innerHTML = '&#9888; 任务已停止';
+                    }
+                    banner.style.display = 'block';
+                }
+
+                // 流式文本
+                var el = document.getElementById('taskStream');
+                if (result.stream_text && result.stream_text.length > 0) {
+                    el.textContent = result.stream_text;
+                    el.scrollTop = el.scrollHeight;
+                } else if (el.textContent === '' || el.querySelector('.stream-placeholder')) {
+                    el.innerHTML = '<div class="stream-placeholder">等待 AI 响应...</div>';
+                }
+
+                // Token 用量
+                var badge = document.getElementById('tokenBadge');
+                if (result.total_tokens > 0) {
+                    badge.style.display = 'inline-block';
+                    badge.textContent = '\u{1F4CA} ' + result.round_tokens + ' / ' + result.total_tokens + ' tokens';
+                }
+
+                // 执行计划
+                if (result.plan && result.plan.trim()) {
+                    var planCard = document.getElementById('planCard');
+                    if (planCard.style.display === 'none') {
+                        planCard.style.display = 'block';
+                    }
+                    var steps = result.plan.split('\n').filter(function(s) { return s.trim(); });
+                    document.getElementById('planContent').innerHTML = steps.map(function(s) {
+                        var text = s.replace(/^\d+\.\s*/, '');
+                        return '<div class="plan-step"><span class="plan-step-num">&#10003;</span><span class="plan-step-text">' + text + '</span></div>';
+                    }).join('');
+                }
+
+                // 日志（嵌套在 result.logs.logs 中，按 ID 增量更新）
+                var logArray = result.logs && result.logs.logs ? result.logs.logs : [];
+                var newLogs = logArray.filter(function(l) { return l.id > lastLogId; });
+                if (newLogs.length > 0) {
                     const logContainer = document.getElementById('taskLog');
-                    for (let i = lastLogCount; i < result.logs.length; i++) {
-                        const l = result.logs[i];
+                    for (var i = 0; i < newLogs.length; i++) {
+                        const l = newLogs[i];
                         const entry = document.createElement('div');
-                        entry.className = 'log-entry ' + (l.type || 'info');
-                        entry.innerHTML = '<span class="log-time">' + l.time + '</span><span class="log-message">' + l.message + '</span>';
+                        var typeClass = 'info';
+                        if (l.level === 'ERROR') typeClass = 'error';
+                        else if (l.level === 'WARN') typeClass = 'warning';
+                        else if (l.level === 'DEBUG') typeClass = 'info';
+                        entry.className = 'log-entry ' + typeClass;
+                        var html = '<span class="log-time">' + (l.ts ? l.ts.substr(11,12) : (l.time || '--:--:--')) + '</span>';
+                        if (l.level) {
+                            html += '<span class="log-badge lvl-' + l.level + '">' + l.level + '</span>';
+                        }
+                        if (l.phase) {
+                            html += '<span class="log-phase">[' + l.phase + ']</span>';
+                        }
+                        html += '<span class="log-message">' + (l.msg || l.message || '') + '</span>';
+                        if (l.dur_ms >= 0) {
+                            html += '<span class="log-dur">' + l.dur_ms + 'ms</span>';
+                        }
+                        if (l.tokens >= 0) {
+                            html += '<span class="log-tokens">' + l.tokens + 't</span>';
+                        }
+                        entry.innerHTML = html;
                         logContainer.appendChild(entry);
                     }
                     logContainer.scrollTop = logContainer.scrollHeight;
-                    lastLogCount = result.logs.length;
+                    lastLogId = newLogs[newLogs.length - 1].id;
                 }
-            } catch (e) { console.error('Failed to refresh task logs:', e); }
+            } catch (e) { /* ignore */ }
         }
         async function executeTask() {
             const task = document.getElementById('taskInput').value.trim();
@@ -492,9 +605,25 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                 }
             }
             document.getElementById('taskLog').innerHTML = '';
-            lastLogCount = 0;
+            lastLogId = 0;
+            // 隐藏旧计划卡片
+            var planCard = document.getElementById('planCard');
+            planCard.style.display = 'none';
+            document.getElementById('planContent').innerHTML = '<div class="stream-placeholder">正在生成执行计划...</div>';
+            // 显示流式响应卡片
+            var streamCard = document.getElementById('streamCard');
+            streamCard.style.display = 'block';
+            var streamEl = document.getElementById('taskStream');
+            streamEl.innerHTML = '<div class="stream-placeholder">等待 AI 响应...</div>';
+            var tokenBadge = document.getElementById('tokenBadge');
+            tokenBadge.style.display = 'none';
+            tokenBadge.textContent = '';
             document.getElementById('statusText').textContent = '执行中...';
             document.getElementById('statusDot').classList.add('error');
+            // 隐藏完成横幅
+            var banner = document.getElementById('completionBanner');
+            banner.style.display = 'none';
+            banner.className = 'completion-banner';
             try {
                 const response = await fetch(API_BASE + '/api/task', {
                     method: 'POST',
@@ -503,7 +632,16 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                 });
                 const result = await response.json();
                 if (result.success) {
-                    logRefreshInterval = setInterval(() => { refreshTaskLogs(); checkTaskStatus(); }, 500);
+                    // 显示 AI 执行计划
+                    if (result.plan && result.plan.trim()) {
+                        planCard.style.display = 'block';
+                        var steps = result.plan.split('\n').filter(function(s) { return s.trim(); });
+                        document.getElementById('planContent').innerHTML = steps.map(function(s) {
+                            var text = s.replace(/^\d+\.\s*/, '');
+                            return '<div class="plan-step"><span class="plan-step-num">&#10003;</span><span class="plan-step-text">' + text + '</span></div>';
+                        }).join('');
+                    }
+                    statusInterval = setInterval(refreshStatus, 500);
                 } else {
                     log('任务失败: ' + result.error, 'error');
                     document.getElementById('statusText').textContent = '就绪';
@@ -514,19 +652,6 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                 document.getElementById('statusText').textContent = '就绪';
                 document.getElementById('statusDot').classList.remove('error');
             }
-        }
-        async function checkTaskStatus() {
-            try {
-                const response = await fetch(API_BASE + '/api/task/status');
-                const result = await response.json();
-                if (!result.running && logRefreshInterval) {
-                    clearInterval(logRefreshInterval);
-                    logRefreshInterval = null;
-                    document.getElementById('statusText').textContent = '就绪';
-                    document.getElementById('statusDot').classList.remove('error');
-                    refreshTaskLogs();
-                }
-            } catch (e) { console.error('Failed to check task status:', e); }
         }
         function stopTask() { fetch(API_BASE + '/api/task/stop', { method: 'POST' }); }
         async function takeScreenshot() {
@@ -761,7 +886,19 @@ static const char* EMBEDDED_INDEX_HTML = R"htmlend(<!DOCTYPE html>
                 const result = await response.json();
                 const container = document.getElementById('systemLog');
                 if (result.logs && result.logs.length > 0) {
-                    container.innerHTML = result.logs.map(l => '<div class="log-entry ' + l.type + '"><span class="log-time">' + l.time + '</span><span class="log-message">' + l.message + '</span></div>').join('');
+                    container.innerHTML = result.logs.map(l => {
+                        var typeClass = (l.level === 'ERROR') ? 'error' : (l.level === 'WARN') ? 'warning' : 'info';
+                        var html = '<div class="log-entry ' + typeClass + '">';
+                        html += '<span class="log-time">' + (l.ts ? l.ts.substr(11,12) : (l.time || '--:--:--')) + '</span>';
+                        if (l.level) html += '<span class="log-badge lvl-' + l.level + '">' + l.level + '</span>';
+                        if (l.phase) html += '<span class="log-phase">[' + l.phase + ']</span>';
+                        if (l.round >= 0) html += '<span style="font-size:10px;color:var(--text-muted);margin-right:4px;">R' + l.round + '</span>';
+                        html += '<span class="log-message">' + (l.msg || l.message || '') + '</span>';
+                        if (l.dur_ms >= 0) html += '<span class="log-dur">' + l.dur_ms + 'ms</span>';
+                        if (l.tokens >= 0) html += '<span class="log-tokens">' + l.tokens + 't</span>';
+                        html += '</div>';
+                        return html;
+                    }).join('');
                 } else { container.innerHTML = '<div class="log-entry info"><span class="log-time">--:--:--</span><span class="log-message">暂无日志</span></div>'; }
             } catch (e) { console.error('Failed to refresh logs:', e); }
             finally { isLoadingLogs = false; }
@@ -836,64 +973,68 @@ web::HttpResponse handleIndex(const web::HttpRequest& req) {
     return res;
 }
 
-std::mutex g_logMutex;
-std::vector<std::pair<std::string, std::string>> g_logs;
 std::atomic<bool> g_taskRunning(false);
 std::atomic<bool> g_taskStop(false);
 std::string g_currentTask;
 bool g_visionMode = true;
 std::string g_visionProvider;
 std::string g_visionModel;
-const std::string LOG_FILE = "aries_web.log";
 
-void initLogFile() {
-    // 启动时清空日志文件
-    std::ofstream logFile(LOG_FILE, std::ios::trunc);
-    if (logFile.is_open()) {
-        auto now = std::chrono::system_clock::now();
-        auto time = std::chrono::system_clock::to_time_t(now);
-        std::tm tm;
-        localtime_s(&tm, &time);
-        char timeStr[32];
-        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm);
-        logFile << "[" << timeStr << "] 日志开始记录" << std::endl;
-        logFile.close();
-    }
+// 流式响应缓冲（供前端轮询实时显示）
+std::mutex g_streamMutex;
+std::string g_streamText;
+int g_streamTokens = 0;          // prompt + completion
+int g_streamRoundTokens = 0;     // 当前轮次的 token 累计
+std::string g_currentPlan;       // AI 生成的执行计划
+std::string g_taskResult;       // 任务结果: "success", "stopped", "max_iterations"
+
+void clearStreamBuffer() {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
+    g_streamText.clear();
+    g_streamTokens = 0;
+    g_streamRoundTokens = 0;
 }
 
-void addLog(const std::string& message, const std::string& type = "info") {
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
-    std::tm tm;
-    localtime_s(&tm, &time);
-    char timeStr[32];
-    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &tm);
-    g_logs.push_back({timeStr, message});
-    if (g_logs.size() > 1000) {
-        g_logs.erase(g_logs.begin());
-    }
-    std::cout << "[" << timeStr << "] " << message << std::endl;
-    
-    // 写入日志文件
-    std::ofstream logFile(LOG_FILE, std::ios::app);
-    if (logFile.is_open()) {
-        logFile << "[" << timeStr << "] " << message << std::endl;
-        logFile.close();
-    }
+void appendStreamDelta(const std::string& delta) {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
+    g_streamText += delta;
 }
 
-std::string getLogsJson() {
+std::string getStreamText() {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
+    return g_streamText;
+}
+
+std::string getStreamTextJson() {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
     std::ostringstream oss;
-    oss << "{\"logs\":[";
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    for (size_t i = 0; i < g_logs.size(); i++) {
-        if (i > 0) oss << ",";
-        oss << "{\"time\":\"" << g_logs[i].first << "\",\"message\":\"" 
-            << web::escapeJson(g_logs[i].second) << "\",\"type\":\"info\"}";
-    }
-    oss << "]}";
+    oss << "{\"text\":\"" << web::escapeJson(g_streamText) << "\""
+        << ",\"tokens\":" << g_streamRoundTokens
+        << ",\"total_tokens\":" << g_streamTokens
+        << ",\"bytes\":" << g_streamText.length() << "}";
     return oss.str();
+}
+
+void accumulateStreamTokens(int tokens) {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
+    g_streamTokens += tokens;
+    g_streamRoundTokens += tokens;
+}
+
+// addLog() now delegates to Logger. Preserved for backward compatibility with existing call sites.
+void addLog(const std::string& message, const std::string& type = "info") {
+    if (type == "error") {
+        Logger::instance().error(message);
+    } else if (type == "warn") {
+        Logger::instance().warn(message);
+    } else {
+        Logger::instance().info(message);
+    }
+}
+
+// Returns structured JSON logs for the Web GUI /api/logs endpoint
+std::string getLogsJson() {
+    return Logger::instance().getRecentLogsJson(500);
 }
 
 std::string getControlListDescription() {
@@ -1285,13 +1426,73 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
     g_taskRunning = true;
     g_taskStop = false;
     g_currentTask = task;
+    g_taskResult.clear();
     g_visionMode = useVision;
     g_visionProvider = visionProvider;
     g_visionModel = visionModel;
-    
-    // 创建状态窗口（在主线程）
+    clearStreamBuffer();
+
+    // ── AI 规划阶段 ──
+    {
+        addLog("正在生成 AI 执行计划...");
+
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        std::string planningPrompt = PromptTemplates::buildPlanningPrompt(
+            task, screenWidth, screenHeight);
+
+        std::pair<bool, std::string> planResult;
+        if (g_visionMode) {
+            std::string planScreenshotPath = "temp/plan_screenshot.png";
+            if (capture_screen(planScreenshotPath)) {
+                planResult = provider->sendMessageWithImages(
+                    planningPrompt, {planScreenshotPath},
+                    "你是一个任务规划助手，请用中文制定计划。");
+                DeleteFileA(planScreenshotPath.c_str());
+            } else {
+                planResult = provider->sendMessage(
+                    {{"user", planningPrompt}},
+                    "你是一个任务规划助手，请用中文制定计划。");
+            }
+        } else {
+            planResult = provider->sendMessage(
+                {{"user", planningPrompt}},
+                "你是一个任务规划助手，请用中文制定计划。");
+        }
+
+        if (planResult.first && !planResult.second.empty()) {
+            ActionParser planParser;
+            ParsedPlan plan = planParser.parsePlan(planResult.second);
+
+            if (plan.isValid()) {
+                std::ostringstream planOss;
+                for (size_t i = 0; i < plan.steps.size(); i++) {
+                    if (i > 0) planOss << "\n";
+                    planOss << (i + 1) << ". " << plan.steps[i];
+                }
+                g_currentPlan = planOss.str();
+                StatusWindow::getInstance().setPlanSteps(plan.steps);
+                addLog("AI 计划生成成功: " + std::to_string(plan.steps.size()) + " 步");
+
+                auto planUsage = provider->getLastTokenUsage();
+                if (planUsage.valid()) {
+                    StatusWindow::getInstance().setTokenUsage(
+                        planUsage.prompt_tokens,
+                        planUsage.completion_tokens,
+                        planUsage.total_tokens);
+                }
+            } else {
+                g_currentPlan.clear();
+                addLog("Warning: 无法解析 AI 执行计划");
+            }
+        } else {
+            g_currentPlan.clear();
+            addLog("Warning: AI 规划请求失败");
+        }
+    }
+
+    // 设置状态窗口回调
     auto& statusWindow = StatusWindow::getInstance();
-    statusWindow.create();
     statusWindow.setStopCallback([]() {
         g_taskStop = true;
         addLog("用户请求停止任务");
@@ -1344,6 +1545,8 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
         int maxIter = finalMaxIterations;
         
         while (currentIteration < maxIter && !g_taskStop) {
+            Logger::instance().setRoundId(currentIteration + 1);
+            g_streamRoundTokens = 0;  // 重置本轮的 token 计数
             addLog("迭代 " + std::to_string(currentIteration + 1) + "/" + std::to_string(maxIter));
             StatusWindow::getInstance().setIteration(currentIteration + 1, maxIter);
             StatusWindow::getInstance().addLog("迭代 " + std::to_string(currentIteration + 1));
@@ -1366,10 +1569,18 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 }
                 
                 std::string screenshotPath = "temp/screenshot.png";
-                capture_screen(screenshotPath);
+                {
+                    auto _t = Logger::ScopedTimer("screenshot");
+                    capture_screen(screenshotPath);
+                }
                 addLog("截图完成");
                 
                 std::string userContent = "任务: " + g_currentTask;
+                if (!g_currentPlan.empty()) {
+                    userContent += "\n\n【AI 执行计划 -- 请按计划逐步执行】\n";
+                    userContent += g_currentPlan;
+                    userContent += "\n\n请根据实际情况灵活调整。";
+                }
                 if (!actionHistory.empty()) {
                     userContent += "\n\n【动作历史】\n";
                     for (const auto& h : actionHistory) {
@@ -1380,10 +1591,30 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 if (g_taskStop) break;
                 
                 addLog("发送请求到 AI...");
-                auto [success, response] = provider->sendMessageWithImages(userContent, {screenshotPath}, systemPrompt);
-                
+                std::pair<bool, std::string> visResult;
+                {
+                    auto _t = Logger::ScopedTimer("ai_call");
+                    visResult = provider->sendMessageWithImagesStream(userContent, {screenshotPath},
+                        [](const std::string& delta, bool done) {
+                            if (!delta.empty()) appendStreamDelta(delta);
+                        }, systemPrompt);
+                }
+                auto [success, response] = visResult;
+                {
+                    auto usage = provider->getLastTokenUsage();
+                    if (usage.valid()) {
+                        Logger::instance().setTokenUsage(usage.total_tokens);
+                        accumulateStreamTokens(usage.total_tokens);
+                        StatusWindow::getInstance().setTokenUsage(
+                            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
+                        addLog("Token: " + std::to_string(usage.prompt_tokens) + " + "
+                               + std::to_string(usage.completion_tokens) + " = "
+                               + std::to_string(usage.total_tokens));
+                    }
+                }
+
                 if (g_taskStop) break;
-                
+
                 if (!success) {
                     addLog("AI 请求失败: " + provider->getLastError());
                     break;
@@ -1445,9 +1676,13 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                     detail = "目标: " + action.target.value();
                 }
                 StatusWindow::getInstance().setActionDetail(detail);
-                
-                auto result = executor.execute(action);
-                
+
+                ExecutionResult result;
+                {
+                    auto _t = Logger::ScopedTimer("execute");
+                    result = executor.execute(action);
+                }
+
                 std::string historyEntry;
                 if (result.success) {
                     historyEntry = action.action + " -> 成功";
@@ -1460,11 +1695,12 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 actionHistory.push_back(historyEntry);
                 addLog(action.action + " -> " + (result.success ? "成功" : "失败"));
                 StatusWindow::getInstance().addLog(result.success ? "✓ 成功" : "✗ 失败");
-                
+
                 // 不区分大小写检查 Stop/Finish
                 std::string actionLower = action.action;
                 for (char& c : actionLower) c = tolower(c);
                 if (actionLower == "stop" || actionLower == "finish") {
+                    g_taskResult = "success";
                     addLog("任务完成");
                     break;
                 }
@@ -1488,7 +1724,10 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                     addLog("视觉模型名称: " + (g_visionModel.empty() ? "(默认)" : g_visionModel));
                     
                     std::string screenshotPath = "temp/screenshot.png";
-                    capture_screen_compressed(screenshotPath, 1280);  // 使用压缩截图，最大宽度1280
+                    {
+                        auto _t = Logger::ScopedTimer("screenshot");
+                        capture_screen_compressed(screenshotPath, 1280);  // 使用压缩截图，最大宽度1280
+                    }
                     
                     // 检查截图文件是否存在
                     std::ifstream checkFile(screenshotPath);
@@ -1502,8 +1741,16 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                         std::string visionSystemPrompt = "你是屏幕描述助手。简洁描述屏幕内容，格式：\n【窗口】标题\n【内容】主要内容\n【控件】按钮/输入框名称和位置\n【状态】界面状态\n每项不超过50字。";
                         
                         addLog("正在发送请求到视觉模型...");
-                        auto [visionSuccess, visionResponse] = visionProvider->sendMessageWithImages(
-                            "简洁描述截图内容：", {screenshotPath}, visionSystemPrompt);
+                        std::pair<bool, std::string> visionResult;
+                        {
+                            auto _t = Logger::ScopedTimer("vision_call");
+                            visionResult = visionProvider->sendMessageWithImagesStream(
+                                "简洁描述截图内容：", {screenshotPath},
+                                [](const std::string& delta, bool done) {
+                                    if (!delta.empty()) appendStreamDelta(delta);
+                                }, visionSystemPrompt);
+                        }
+                        auto [visionSuccess, visionResponse] = visionResult;
                         
                         if (visionSuccess && !visionResponse.empty()) {
                             addLog("视觉模型转述完成，响应长度: " + std::to_string(visionResponse.length()));
@@ -1521,8 +1768,13 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                     userContent = "\n\n【当前屏幕控件信息】\n" + controlList;
                 }
                 
+                if (!g_currentPlan.empty()) {
+                    userContent += "\n\n【AI 执行计划 -- 请按计划逐步执行】\n";
+                    userContent += g_currentPlan;
+                    userContent += "\n\n请根据实际情况灵活调整。";
+                }
                 userContent += "\n\n任务: " + g_currentTask;
-                
+
                 if (!actionHistory.empty()) {
                     userContent += "\n\n【动作历史】\n";
                     for (const auto& h : actionHistory) {
@@ -1536,10 +1788,30 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                 if (g_taskStop) break;
                 
                 addLog("发送请求到 AI...");
-                auto [success, response] = provider->sendMessage(messages, systemPrompt);
-                
+                std::pair<bool, std::string> txtResult;
+                {
+                    auto _t = Logger::ScopedTimer("ai_call");
+                    txtResult = provider->sendMessageStream(messages,
+                        [](const std::string& delta, bool done) {
+                            if (!delta.empty()) appendStreamDelta(delta);
+                        }, systemPrompt);
+                }
+                auto [success, response] = txtResult;
+                {
+                    auto usage = provider->getLastTokenUsage();
+                    if (usage.valid()) {
+                        Logger::instance().setTokenUsage(usage.total_tokens);
+                        accumulateStreamTokens(usage.total_tokens);
+                        StatusWindow::getInstance().setTokenUsage(
+                            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
+                        addLog("Token: " + std::to_string(usage.prompt_tokens) + " + "
+                               + std::to_string(usage.completion_tokens) + " = "
+                               + std::to_string(usage.total_tokens));
+                    }
+                }
+
                 if (g_taskStop) break;
-                
+
                 if (!success) {
                     addLog("AI 请求失败");
                     break;
@@ -1601,26 +1873,31 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                     detail2 = "目标: " + action.target.value();
                 }
                 StatusWindow::getInstance().setActionDetail(detail2);
-                
-                auto result = executor.execute(action);
-                
+
+                ExecutionResult result2;
+                {
+                    auto _t = Logger::ScopedTimer("execute");
+                    result2 = executor.execute(action);
+                }
+
                 std::string historyEntry;
-                if (result.success) {
+                if (result2.success) {
                     historyEntry = action.action + " -> 成功";
-                    if (!result.message.empty() && result.message != "成功") {
-                        historyEntry += "\n结果: " + result.message;
+                    if (!result2.message.empty() && result2.message != "成功") {
+                        historyEntry += "\n结果: " + result2.message;
                     }
                 } else {
-                    historyEntry = action.action + " -> 失败: " + result.message;
+                    historyEntry = action.action + " -> 失败: " + result2.message;
                 }
                 actionHistory.push_back(historyEntry);
-                addLog(action.action + " -> " + (result.success ? "成功" : "失败"));
-                StatusWindow::getInstance().addLog(result.success ? "✓ 成功" : "✗ 失败");
-                
+                addLog(action.action + " -> " + (result2.success ? "成功" : "失败"));
+                StatusWindow::getInstance().addLog(result2.success ? "✓ 成功" : "✗ 失败");
+
                 // 不区分大小写检查 Stop/Finish
                 std::string actionLower = action.action;
                 for (char& c : actionLower) c = tolower(c);
                 if (actionLower == "stop" || actionLower == "finish") {
+                    g_taskResult = "success";
                     addLog("任务完成");
                     break;
                 }
@@ -1650,6 +1927,7 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
                         ShowWindow(consoleWnd, SW_MINIMIZE);
                     }
                 } else {
+                    g_taskResult = "max_iterations";
                     addLog("用户选择结束任务");
                     break;
                 }
@@ -1657,36 +1935,73 @@ web::HttpResponse handleTask(const web::HttpRequest& req) {
         }
         
         g_taskRunning = false;
+        g_streamRoundTokens = 0;
+        g_currentPlan.clear();
         addLog("任务执行结束");
-        StatusWindow::getInstance().destroy();
     }).detach();
     
     web::HttpResponse res;
-    res.setJson("{\"success\":true}");
+    std::string escapedPlan = web::escapeJson(g_currentPlan);
+    res.setJson("{\"success\":true,\"plan\":\"" + escapedPlan + "\"}");
     return res;
 }
 
 web::HttpResponse handleTaskStop(const web::HttpRequest& req) {
     g_taskStop = true;
     addLog("正在停止任务...");
-    
+
     web::HttpResponse res;
     res.setJson("{\"success\":true}");
     return res;
 }
 
+web::HttpResponse handleTaskStreamText(const web::HttpRequest& req) {
+    web::HttpResponse res;
+    res.setJson(getStreamTextJson());
+    return res;
+}
+
+web::HttpResponse handleTaskTokens(const web::HttpRequest& req) {
+    std::ostringstream oss;
+    oss << "{\"round_tokens\":" << g_streamRoundTokens
+        << ",\"total_tokens\":" << g_streamTokens
+        << ",\"running\":" << (g_taskRunning ? "true" : "false") << "}";
+    web::HttpResponse res;
+    res.setJson(oss.str());
+    return res;
+}
+
 web::HttpResponse handleTaskStatus(const web::HttpRequest& req) {
     std::ostringstream oss;
-    oss << "{\"running\":" << (g_taskRunning ? "true" : "false") << ",";
-    oss << "\"task\":\"" << web::escapeJson(g_currentTask) << "\"}";
-    
+    oss << "{";
+    oss << "\"running\":" << (g_taskRunning ? "true" : "false") << ",";
+    oss << "\"result\":\"" << web::escapeJson(g_taskResult) << "\",";
+    oss << "\"task\":\"" << web::escapeJson(g_currentTask) << "\",";
+    oss << "\"plan\":\"" << web::escapeJson(g_currentPlan) << "\",";
+
+    // 流文本
+    {
+        std::lock_guard<std::mutex> lock(g_streamMutex);
+        oss << "\"stream_text\":\"" << web::escapeJson(g_streamText) << "\",";
+        oss << "\"stream_bytes\":" << g_streamText.size() << ",";
+    }
+
+    // Token
+    oss << "\"round_tokens\":" << g_streamRoundTokens << ",";
+    oss << "\"total_tokens\":" << g_streamTokens << ",";
+
+    // 最近日志
+    oss << "\"logs\":" << Logger::instance().getRecentLogsJson(20);
+
+    oss << "}";
+
     web::HttpResponse res;
     res.setJson(oss.str());
     return res;
 }
 
 web::HttpResponse handleCheckUpdate(const web::HttpRequest& req) {
-    std::string currentVersion = "v1.3.1";
+    std::string currentVersion = "v1.3.2";
     std::string latestVersion = "";
     bool hasUpdate = false;
     
@@ -1764,8 +2079,8 @@ int main() {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
     
-    // 初始化日志文件（清空旧日志）
-    initLogFile();
+    // 初始化结构化日志
+    Logger::instance().init("aries_web.log");
     
     std::cout << R"(
       ___           ___                       ___           ___                    ___                 
@@ -1780,11 +2095,14 @@ int main() {
       /:/  /       |:|  |       \/__/        \:\__\        \::/  /                 /:/  /      \/__/    
       \/__/         \|__|                     \/__/         \/__/                  \/__/
 )" << std::endl;
-    std::cout << "  Open-Aries-AI - Web 服务器  版本 v1.3.1" << std::endl;
+    std::cout << "  Open-Aries-AI - Web 服务器  版本 v1.3.2" << std::endl;
     std::cout << std::endl;
     
     CreateDirectoryA("temp", NULL);
-    
+
+    // 立即显示悬浮窗
+    StatusWindow::getInstance().create();
+
     auto& providerMgr = ProviderManager::getInstance();
     providerMgr.registerBuiltInProviders();
     providerMgr.loadSavedProviders();  // 加载保存的提供商配置
@@ -1812,6 +2130,8 @@ int main() {
     server.post("/api/task", handleTask);
     server.post("/api/task/stop", handleTaskStop);
     server.get("/api/task/status", handleTaskStatus);
+    server.get("/api/task/stream-text", handleTaskStreamText);
+    server.get("/api/task/tokens", handleTaskTokens);
     server.get("/api/update/check", handleCheckUpdate);
     server.post("/api/model/test", handleTestModel);
     
@@ -1834,6 +2154,7 @@ int main() {
     
     server.stop();
     std::cout << "服务器已停止" << std::endl;
-    
+
+    StatusWindow::getInstance().destroy();
     return 0;
 }
