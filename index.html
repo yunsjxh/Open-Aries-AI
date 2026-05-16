@@ -1,0 +1,2773 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open-Aries-AI - Windows 智能自动化助手</title>
+    <meta name="description" content="基于大语言模型的 Windows 桌面自动化助手，通过截图分析 + AI 决策 + 自动执行，实现自然语言控制电脑操作">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --primary-light: #818cf8;
+            --secondary: #06b6d4;
+            --accent: #f59e0b;
+            --dark: #0f172a;
+            --dark-light: #1e293b;
+            --dark-lighter: #334155;
+            --light: #f8fafc;
+            --gray: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --gradient-1: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
+            --gradient-2: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+            --gradient-3: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+            --radius: 12px;
+            --radius-lg: 16px;
+            --radius-xl: 24px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--dark);
+            color: var(--light);
+            line-height: 1.6;
+            overflow-x: hidden;
+            cursor: none;
+        }
+
+        /* Custom Cursor */
+        .cursor {
+            position: fixed;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--primary-light);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 9999;
+            transition: transform 0.1s ease, background 0.2s ease, border-color 0.2s ease;
+            transform: translate(-50%, -50%);
+        }
+
+        .cursor-follower {
+            position: fixed;
+            width: 40px;
+            height: 40px;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 9998;
+            transition: transform 0.15s ease-out, background 0.2s ease;
+            transform: translate(-50%, -50%);
+        }
+
+        .cursor.hover {
+            transform: translate(-50%, -50%) scale(1.5);
+            background: rgba(99, 102, 241, 0.2);
+            border-color: var(--primary);
+        }
+
+        .cursor-follower.hover {
+            transform: translate(-50%, -50%) scale(1.2);
+            background: rgba(99, 102, 241, 0.15);
+        }
+
+        .cursor.click {
+            transform: translate(-50%, -50%) scale(0.8);
+        }
+
+        /* Hide default cursor on interactive elements */
+        a, button, .btn, .download-btn, .tab-btn, .faq-question, .feature-card, .arch-module, .workflow-step {
+            cursor: none;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--dark-light);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--dark-lighter);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary);
+        }
+
+        /* Navigation */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.3s ease;
+        }
+
+        .navbar.scrolled {
+            background: rgba(15, 23, 42, 0.95);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 700;
+            font-size: 1.5rem;
+            color: var(--light);
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--gradient-1);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--gray);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+            position: relative;
+        }
+
+        .nav-links a:hover {
+            color: var(--light);
+        }
+
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: var(--gradient-1);
+            transition: width 0.3s ease;
+        }
+
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .btn {
+            padding: 0.625rem 1.25rem;
+            border-radius: var(--radius);
+            font-weight: 600;
+            font-size: 0.875rem;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--light);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-outline:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .btn-primary {
+            background: var(--gradient-1);
+            color: white;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+        }
+
+        .btn-large {
+            padding: 1rem 2rem;
+            font-size: 1rem;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            padding: 8rem 2rem 4rem;
+            overflow: hidden;
+        }
+
+        .hero-bg {
+            position: absolute;
+            inset: 0;
+            background: 
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99, 102, 241, 0.15), transparent),
+                radial-gradient(ellipse 60% 40% at 80% 80%, rgba(6, 182, 212, 0.1), transparent),
+                radial-gradient(ellipse 50% 30% at 20% 60%, rgba(139, 92, 246, 0.1), transparent);
+        }
+
+        .hero-grid {
+            position: absolute;
+            inset: 0;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 70%);
+        }
+
+        .hero-content {
+            max-width: 1400px;
+            width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4rem;
+            align-items: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 100px;
+            font-size: 0.875rem;
+            color: var(--primary-light);
+            margin-bottom: 1.5rem;
+        }
+
+        .hero-badge i {
+            color: var(--accent);
+        }
+
+        .hero-title {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+        }
+
+        .hero-title span {
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-subtitle {
+            font-size: 1.25rem;
+            color: var(--gray);
+            margin-bottom: 2rem;
+            max-width: 500px;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .hero-stats {
+            display: flex;
+            gap: 3rem;
+            margin-top: 3rem;
+            padding-top: 2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--light);
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--gray);
+        }
+
+        /* Terminal Demo */
+        .terminal {
+            background: var(--dark-light);
+            border-radius: var(--radius-xl);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            transform: perspective(1000px) rotateY(-5deg) rotateX(5deg);
+            transition: transform 0.5s ease;
+        }
+
+        .terminal:hover {
+            transform: perspective(1000px) rotateY(0deg) rotateX(0deg);
+        }
+
+        .terminal-header {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .terminal-dot.red { background: #ef4444; }
+        .terminal-dot.yellow { background: #f59e0b; }
+        .terminal-dot.green { background: #10b981; }
+
+        .terminal-title {
+            margin-left: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--gray);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .terminal-body {
+            padding: 1.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            line-height: 1.8;
+            min-height: 320px;
+        }
+
+        .terminal-line {
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .terminal-prompt {
+            color: var(--primary-light);
+            white-space: nowrap;
+        }
+
+        .terminal-input {
+            color: var(--light);
+        }
+
+        .terminal-output {
+            color: var(--gray);
+            margin-left: 0;
+            margin-bottom: 1rem;
+            padding-left: 1.5rem;
+        }
+
+        .terminal-output.success {
+            color: var(--success);
+        }
+
+        .terminal-output .ascii-art {
+            color: var(--primary-light);
+            font-size: 0.75rem;
+            line-height: 1.4;
+        }
+
+        .terminal-output .log-iteration {
+            color: var(--secondary);
+            font-weight: 600;
+        }
+
+        .terminal-output .log-success {
+            color: var(--success);
+        }
+
+        .terminal-output .log-ai {
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        .terminal-output .log-think {
+            color: var(--gray);
+            font-style: italic;
+        }
+
+        .terminal-output .log-action {
+            color: var(--primary-light);
+            font-weight: 500;
+        }
+
+        .terminal-cursor {
+            display: inline-block;
+            width: 8px;
+            height: 1.2em;
+            background: var(--primary);
+            animation: blink 1s infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        /* Features Section */
+        .section {
+            padding: 6rem 2rem;
+            position: relative;
+        }
+
+        .section-header {
+            text-align: center;
+            max-width: 700px;
+            margin: 0 auto 4rem;
+        }
+
+        .section-label {
+            display: inline-block;
+            padding: 0.375rem 1rem;
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 100px;
+            font-size: 0.875rem;
+            color: var(--primary-light);
+            margin-bottom: 1rem;
+        }
+
+        .section-title {
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .section-subtitle {
+            font-size: 1.125rem;
+            color: var(--gray);
+        }
+
+        .features-grid {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .feature-card {
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: var(--radius-lg);
+            padding: 2rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--gradient-1);
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(255, 255, 255, 0.1);
+            box-shadow: var(--shadow-xl);
+        }
+
+        .feature-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .feature-icon {
+            width: 56px;
+            height: 56px;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: var(--primary-light);
+            margin-bottom: 1.25rem;
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover .feature-icon {
+            background: var(--gradient-1);
+            color: white;
+            transform: scale(1.1);
+        }
+
+        .feature-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+        }
+
+        .feature-desc {
+            color: var(--gray);
+            font-size: 0.9375rem;
+            line-height: 1.7;
+        }
+
+        /* Workflow Section */
+        .workflow {
+            background: var(--dark-light);
+            position: relative;
+        }
+
+        .workflow-bg {
+            position: absolute;
+            inset: 0;
+            background: 
+                radial-gradient(ellipse 50% 30% at 30% 50%, rgba(99, 102, 241, 0.08), transparent),
+                radial-gradient(ellipse 40% 25% at 70% 60%, rgba(6, 182, 212, 0.06), transparent);
+        }
+
+        .workflow-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .workflow-diagram {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin: 3rem 0;
+        }
+
+        .workflow-step {
+            background: var(--dark);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem 2rem;
+            text-align: center;
+            min-width: 160px;
+            transition: all 0.3s ease;
+        }
+
+        .workflow-step:hover {
+            border-color: var(--primary);
+            transform: translateY(-4px);
+            box-shadow: 0 10px 30px rgba(99, 102, 241, 0.2);
+        }
+
+        .workflow-step i {
+            font-size: 2rem;
+            color: var(--primary-light);
+            margin-bottom: 0.75rem;
+        }
+
+        .workflow-step h4 {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .workflow-step p {
+            font-size: 0.875rem;
+            color: var(--gray);
+        }
+
+        .workflow-arrow {
+            color: var(--primary-light);
+            font-size: 1.5rem;
+        }
+
+        .workflow-loop {
+            width: 100%;
+            text-align: center;
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: rgba(99, 102, 241, 0.05);
+            border: 1px dashed rgba(99, 102, 241, 0.3);
+            border-radius: var(--radius);
+        }
+
+        .workflow-loop i {
+            color: var(--primary-light);
+            margin-right: 0.5rem;
+        }
+
+        /* Actions Section */
+        .actions-tabs {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .tabs-header {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--radius);
+            color: var(--gray);
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .tab-btn:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            color: var(--light);
+        }
+
+        .tab-btn.active {
+            background: var(--gradient-1);
+            border-color: transparent;
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .actions-table {
+            width: 100%;
+            background: var(--dark-light);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .actions-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .actions-table th,
+        .actions-table td {
+            padding: 1rem 1.5rem;
+            text-align: left;
+        }
+
+        .actions-table th {
+            background: rgba(0, 0, 0, 0.2);
+            font-weight: 600;
+            color: var(--light);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .actions-table td {
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            color: var(--gray);
+            font-size: 0.9375rem;
+        }
+
+        .actions-table tr:hover td {
+            background: rgba(99, 102, 241, 0.05);
+            color: var(--light);
+        }
+
+        .action-tag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+            color: var(--primary-light);
+        }
+
+        /* Architecture Section */
+        .architecture {
+            background: var(--dark-light);
+        }
+
+        .architecture-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .arch-diagram {
+            background: var(--dark);
+            border-radius: var(--radius-xl);
+            padding: 3rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .arch-layer {
+            margin-bottom: 2rem;
+        }
+
+        .arch-layer:last-child {
+            margin-bottom: 0;
+        }
+
+        .arch-layer-title {
+            font-size: 0.875rem;
+            color: var(--gray);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .arch-modules {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .arch-module {
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .arch-module:hover {
+            background: rgba(99, 102, 241, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .arch-module i {
+            font-size: 1.5rem;
+            color: var(--primary-light);
+            margin-bottom: 0.75rem;
+        }
+
+        .arch-module h4 {
+            font-size: 0.9375rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .arch-module p {
+            font-size: 0.8125rem;
+            color: var(--gray);
+        }
+
+        .arch-connector {
+            text-align: center;
+            padding: 1rem 0;
+            color: var(--primary-light);
+            font-size: 1.5rem;
+        }
+
+        /* Quick Start Section */
+        .quickstart-steps {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .step-item {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+            position: relative;
+        }
+
+        .step-item:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: 24px;
+            top: 56px;
+            width: 2px;
+            height: calc(100% + 1rem);
+            background: linear-gradient(to bottom, var(--primary), transparent);
+        }
+
+        .step-number {
+            width: 50px;
+            height: 50px;
+            background: var(--gradient-1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+            position: relative;
+            z-index: 1;
+        }
+
+        .step-content {
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem 2rem;
+            flex: 1;
+        }
+
+        .step-content h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+        }
+
+        .step-content p {
+            color: var(--gray);
+            margin-bottom: 1rem;
+        }
+
+        .code-block {
+            background: #0d1117;
+            border-radius: var(--radius);
+            padding: 1rem 1.25rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            overflow-x: auto;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .code-block .comment {
+            color: #8b949e;
+        }
+
+        .code-block .command {
+            color: #7ee787;
+        }
+
+        /* Demo Section */
+        .demo-section {
+            background: var(--dark-light);
+        }
+
+        .demo-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .demo-card {
+            background: var(--dark);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: var(--radius-xl);
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+
+        .demo-header {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1.25rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .demo-icon {
+            width: 48px;
+            height: 48px;
+            background: var(--gradient-1);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .demo-title h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .demo-title p {
+            font-size: 0.875rem;
+            color: var(--gray);
+        }
+
+        .demo-content {
+            padding: 1.5rem;
+        }
+
+        .demo-steps {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .demo-step {
+            display: flex;
+            gap: 1rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: var(--radius);
+            border-left: 3px solid var(--primary);
+        }
+
+        .demo-step-number {
+            width: 28px;
+            height: 28px;
+            background: var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.875rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .demo-step-content {
+            flex: 1;
+        }
+
+        .demo-step-content h4 {
+            font-size: 0.9375rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .demo-step-content p {
+            font-size: 0.875rem;
+            color: var(--gray);
+            margin-bottom: 0.5rem;
+        }
+
+        .demo-log {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+            background: #0d1117;
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius);
+            color: var(--gray);
+        }
+
+        .demo-log .success { color: var(--success); }
+        .demo-log .info { color: var(--secondary); }
+        .demo-log .action { color: var(--primary-light); }
+
+        /* FAQ Section */
+        .faq-list {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .faq-item {
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: var(--radius-lg);
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+
+        .faq-question {
+            padding: 1.25rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+        .faq-question:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .faq-question h4 {
+            font-weight: 500;
+            font-size: 1rem;
+        }
+
+        .faq-question i {
+            color: var(--gray);
+            transition: transform 0.3s ease;
+        }
+
+        .faq-item.active .faq-question i {
+            transform: rotate(180deg);
+        }
+
+        .faq-answer {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease;
+        }
+
+        .faq-item.active .faq-answer {
+            max-height: 500px;
+            padding: 0 1.5rem 1.25rem;
+        }
+
+        .faq-answer p {
+            color: var(--gray);
+            line-height: 1.8;
+        }
+
+        /* Download Section */
+        .download {
+            background: var(--dark-light);
+            text-align: center;
+        }
+
+        .download-card {
+            max-width: 600px;
+            margin: 0 auto;
+            background: var(--dark);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--radius-xl);
+            padding: 3rem;
+            position: relative;
+            overflow: visible;
+        }
+
+        .download-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--gradient-1);
+        }
+
+        .download-icon {
+            width: 80px;
+            height: 80px;
+            background: var(--gradient-1);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            margin: 0 auto 1.5rem;
+        }
+
+        .download-card h3 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+        }
+
+        .download-card p {
+            color: var(--gray);
+            margin-bottom: 1.5rem;
+        }
+
+        .version-info {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            font-size: 0.875rem;
+            color: var(--gray);
+        }
+
+        .version-info span {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .version-info i {
+            color: var(--success);
+        }
+
+        /* Footer */
+        .footer {
+            background: var(--dark);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 4rem 2rem 2rem;
+        }
+
+        .footer-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: 3rem;
+            margin-bottom: 3rem;
+        }
+
+        .footer-brand p {
+            color: var(--gray);
+            margin-top: 1rem;
+            font-size: 0.9375rem;
+        }
+
+        .footer-links h4 {
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            font-size: 0.9375rem;
+        }
+
+        .footer-links ul {
+            list-style: none;
+        }
+
+        .footer-links li {
+            margin-bottom: 0.75rem;
+        }
+
+        .footer-links a {
+            color: var(--gray);
+            text-decoration: none;
+            font-size: 0.9375rem;
+            transition: color 0.3s ease;
+        }
+
+        .footer-links a:hover {
+            color: var(--primary-light);
+        }
+
+        .footer-bottom {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding-top: 2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .footer-bottom p {
+            color: var(--gray);
+            font-size: 0.875rem;
+        }
+
+        .social-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .social-links a {
+            width: 40px;
+            height: 40px;
+            background: var(--dark-light);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--gray);
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .social-links a:hover {
+            background: var(--primary);
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        /* Mobile Menu */
+        .mobile-menu-btn {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--light);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .hero-content {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+
+            .hero-subtitle {
+                margin-left: auto;
+                margin-right: auto;
+            }
+
+            .hero-buttons {
+                justify-content: center;
+            }
+
+            .hero-stats {
+                justify-content: center;
+            }
+
+            .terminal {
+                transform: none;
+                max-width: 600px;
+                margin: 0 auto;
+            }
+
+            .footer-content {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .nav-links {
+                display: none;
+            }
+
+            .mobile-menu-btn {
+                display: block;
+            }
+
+            .nav-buttons {
+                display: none;
+            }
+
+            .hero {
+                padding-top: 6rem;
+            }
+
+            .section {
+                padding: 4rem 1.5rem;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .workflow-diagram {
+                flex-direction: column;
+            }
+
+            .workflow-arrow {
+                transform: rotate(90deg);
+            }
+
+            .actions-table {
+                overflow-x: auto;
+            }
+
+            .footer-content {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+
+            .footer-bottom {
+                flex-direction: column;
+                text-align: center;
+            }
+        }
+
+        /* Animations */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.6s ease, transform 0.6s ease;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Glow Effects */
+        .glow {
+            position: relative;
+        }
+
+        .glow::after {
+            content: '';
+            position: absolute;
+            inset: -2px;
+            background: var(--gradient-1);
+            border-radius: inherit;
+            opacity: 0;
+            z-index: -1;
+            filter: blur(20px);
+            transition: opacity 0.3s ease;
+        }
+
+        .glow:hover::after {
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="#" class="logo">
+                <div class="logo-icon">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <span>Open-Aries-AI</span>
+            </a>
+            
+            <ul class="nav-links">
+                <li><a href="#features">功能特性</a></li>
+                <li><a href="#workflow">工作流程</a></li>
+                <li><a href="#actions">动作支持</a></li>
+                <li><a href="#architecture">系统架构</a></li>
+                <li><a href="#quickstart">快速开始</a></li>
+                <li><a href="#faq">常见问题</a></li>
+            </ul>
+
+            <div class="nav-buttons">
+                <a href="https://github.com/yunsjxh/Open-Aries-AI" class="btn btn-outline" target="_blank">
+                    <i class="fab fa-github"></i>
+                    GitHub
+                </a>
+                <a href="#download" class="btn btn-primary">
+                    <i class="fas fa-download"></i>
+                    下载
+                </a>
+            </div>
+
+            <button class="mobile-menu-btn">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-bg"></div>
+        <div class="hero-grid"></div>
+        
+        <div class="hero-content">
+            <div class="hero-text">
+                <div class="hero-badge">
+                    <i class="fas fa-sparkles"></i>
+                    <span>v1.3.0.1 现已发布</span>
+                </div>
+                
+                <h1 class="hero-title">
+                    Windows 智能
+                    <span>自动化助手</span>
+                </h1>
+                
+                <p class="hero-subtitle">
+                    基于大语言模型的桌面自动化工具。通过截图分析 + AI 决策 + 自动执行，实现自然语言控制电脑操作。
+                </p>
+                
+                <div class="hero-buttons">
+                    <a href="#download" class="btn btn-primary btn-large glow">
+                        <i class="fas fa-download"></i>
+                        立即下载
+                    </a>
+                    <a href="https://github.com/yunsjxh/Open-Aries-AI" class="btn btn-outline btn-large" target="_blank">
+                        <i class="fab fa-github"></i>
+                        查看源码
+                    </a>
+                </div>
+
+                <div class="hero-stats">
+                    <div class="stat-item">
+                        <div class="stat-value">10+</div>
+                        <div class="stat-label">核心功能</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">14</div>
+                        <div class="stat-label">文件操作</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">100%</div>
+                        <div class="stat-label">开源免费</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hero-demo">
+                <div class="terminal">
+                    <div class="terminal-header">
+                        <div class="terminal-dot red"></div>
+                        <div class="terminal-dot yellow"></div>
+                        <div class="terminal-dot green"></div>
+                        <span class="terminal-title">aries_agent.exe</span>
+                    </div>
+                    <div class="terminal-body">
+                        <div class="terminal-line">
+                            <span class="terminal-prompt">$</span>
+                            <span class="terminal-input">aries_agent.exe</span>
+                        </div>
+                        <div class="terminal-output">
+  Open-Aries-AI - Windows 智能自动化助手  版本 v1.3
+
+  正在检查更新...
+  <span class="log-success">当前版本 (v1.3.0.1) 是最新版本</span>
+
+  使用提供商: 智谱 AI (zhipu)
+  使用模型: glm-4.6v-flash
+                        </div>
+                        <div class="terminal-line" id="typing-line">
+                            <span class="terminal-prompt">></span>
+                            <span class="terminal-input" id="typing-text"></span>
+                            <span class="terminal-cursor" id="typing-cursor"></span>
+                        </div>
+                        <div class="terminal-output" id="result-output" style="display: none;">
+<span class="log-iteration">=== 迭代 1/10 ===</span>
+正在截取屏幕...
+<span class="log-success">屏幕已保存到: screenshot.png</span>
+正在发送请求到 AI...
+
+<span class="log-ai">AI 响应:</span>
+<span class="log-think">&lt;思考过程&gt;</span>
+用户想要打开易语言并创建一个窗口程序...
+<span class="log-think">&lt;/思考过程&gt;</span>
+
+<span class="log-action">解析到动作: Installed</span>
+正在获取已安装应用列表...
+<span class="log-success">已获取 222 个应用</span>
+                        </div>
+                        <div class="terminal-output" id="result-output-2" style="display: none;">
+<span class="log-iteration">=== 迭代 2/10 ===</span>
+正在截取屏幕...
+<span class="log-success">屏幕已保存到: screenshot.png</span>
+正在发送请求到 AI...
+
+<span class="log-ai">AI 响应:</span>
+<span class="log-think">&lt;思考过程&gt;</span>
+易语言已启动成功，界面显示开发环境。需要创建窗口程序，通过"文件"菜单操作。
+<span class="log-think">&lt;/思考过程&gt;</span>
+
+<span class="log-action">解析到动作: Tap</span>
+正在执行操作: 点击(17,14) -> 屏幕(32,15)
+<span class="log-success">执行操作: 点击文件菜单</span>
+                        </div>
+                        <div class="terminal-output" id="result-output-3" style="display: none;">
+<span class="log-iteration">=== 迭代 3/10 ===</span>
+正在截取屏幕...
+<span class="log-success">屏幕已保存到: screenshot.png</span>
+正在发送请求到 AI...
+
+<span class="log-ai">AI 响应:</span>
+<span class="log-think">&lt;思考过程&gt;</span>
+文件菜单已打开，需要点击"新建.窗口程序"选项创建程序。
+<span class="log-think">&lt;/思考过程&gt;</span>
+
+<span class="log-action">解析到动作: Tap</span>
+正在执行操作: 点击(53,73) -> 屏幕(101,78)
+<span class="log-success">执行操作: 点击新建窗口程序选项</span>
+                        </div>
+                        <div class="terminal-output" id="result-output-4" style="display: none;">
+<span class="log-iteration">=== 迭代 4/10 ===</span>
+正在截取屏幕...
+<span class="log-success">屏幕已保存到: screenshot.png</span>
+正在发送请求到 AI...
+
+<span class="log-ai">AI 响应:</span>
+<span class="log-think">&lt;思考过程&gt;</span>
+易语言已打开新程序，界面显示代码编辑区，窗口程序创建成功。
+<span class="log-think">&lt;/思考过程&gt;</span>
+
+<span class="log-action">解析到动作: finish</span>
+<span class="log-success">任务完成！已成功打开易语言并创建窗口程序</span>
+
+=== 完成 ===
+按任意键退出...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="section">
+        <div class="section-header fade-in">
+            <span class="section-label">核心功能</span>
+            <h2 class="section-title">强大的自动化能力</h2>
+            <p class="section-subtitle">集成了视觉感知、智能决策、自动执行等核心能力，让 AI 真正成为你的桌面助手</p>
+        </div>
+
+        <div class="features-grid">
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-eye"></i>
+                </div>
+                <h3 class="feature-title">视觉感知</h3>
+                <p class="feature-desc">自动截取屏幕，通过视觉模型分析当前界面状态，理解屏幕上的元素和布局</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-brain"></i>
+                </div>
+                <h3 class="feature-title">智能决策</h3>
+                <p class="feature-desc">AI 根据截图和用户指令，规划下一步操作，实现真正的智能化任务执行</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-robot"></i>
+                </div>
+                <h3 class="feature-title">自动执行</h3>
+                <p class="feature-desc">模拟鼠标点击、键盘输入、滑动等操作，自动完成各种桌面任务</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-window-maximize"></i>
+                </div>
+                <h3 class="feature-title">应用管理</h3>
+                <p class="feature-desc">获取已安装应用列表，智能启动应用程序，支持多种启动方式</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-folder-open"></i>
+                </div>
+                <h3 class="feature-title">文件管理</h3>
+                <p class="feature-desc">完整的文件操作：读取、写入、搜索、执行文件，支持 Unicode 路径</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-mouse-pointer"></i>
+                </div>
+                <h3 class="feature-title">UI Automation</h3>
+                <p class="feature-desc">获取控件树、点击控件、窗口操作（最小化/最大化/置顶等），精准操控界面元素</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-terminal"></i>
+                </div>
+                <h3 class="feature-title">命令执行</h3>
+                <p class="feature-desc">通过 PowerShell 执行系统命令，扩展自动化能力的边界</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-shield-alt"></i>
+                </div>
+                <h3 class="feature-title">安全存储</h3>
+                <p class="feature-desc">DPAPI + 硬件绑定的双重加密存储，使用 CPU + 硬盘 + 主板序列号加密</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-language"></i>
+                </div>
+                <h3 class="feature-title">中文支持</h3>
+                <p class="feature-desc">完美支持中文输入和文件路径，让中文用户无障碍使用</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-history"></i>
+                </div>
+                <h3 class="feature-title">动作历史</h3>
+                <p class="feature-desc">完整的动作历史记录和反馈，避免重复操作，第5次迭代自动进行阶段性总结</p>
+            </div>
+
+            <div class="feature-card fade-in">
+                <div class="feature-icon">
+                    <i class="fas fa-sync-alt"></i>
+                </div>
+                <h3 class="feature-title">智能总结</h3>
+                <p class="feature-desc">第5次迭代自动提示AI进行阶段性总结，提升长任务执行效率</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Workflow Section -->
+    <section id="workflow" class="section workflow">
+        <div class="workflow-bg"></div>
+        
+        <div class="workflow-content">
+            <div class="section-header fade-in">
+                <span class="section-label">工作流程</span>
+                <h2 class="section-title">智能化的执行流程</h2>
+                <p class="section-subtitle">从用户输入到任务完成的完整闭环，每一步都经过精心设计和优化</p>
+            </div>
+
+            <div class="workflow-diagram fade-in">
+                <div class="workflow-step">
+                    <i class="fas fa-keyboard"></i>
+                    <h4>用户输入</h4>
+                    <p>自然语言指令</p>
+                </div>
+                <div class="workflow-arrow">
+                    <i class="fas fa-arrow-right"></i>
+                </div>
+                <div class="workflow-step">
+                    <i class="fas fa-desktop"></i>
+                    <h4>屏幕捕获</h4>
+                    <p>GDI+ 截图</p>
+                </div>
+                <div class="workflow-arrow">
+                    <i class="fas fa-arrow-right"></i>
+                </div>
+                <div class="workflow-step">
+                    <i class="fas fa-brain"></i>
+                    <h4>AI 分析</h4>
+                    <p>视觉理解</p>
+                </div>
+                <div class="workflow-arrow">
+                    <i class="fas fa-arrow-right"></i>
+                </div>
+                <div class="workflow-step">
+                    <i class="fas fa-cogs"></i>
+                    <h4>动作解析</h4>
+                    <p>指令生成</p>
+                </div>
+                <div class="workflow-arrow">
+                    <i class="fas fa-arrow-right"></i>
+                </div>
+                <div class="workflow-step">
+                    <i class="fas fa-play"></i>
+                    <h4>动作执行</h4>
+                    <p>自动操作</p>
+                </div>
+                <div class="workflow-arrow">
+                    <i class="fas fa-arrow-right"></i>
+                </div>
+                <div class="workflow-step">
+                    <i class="fas fa-check-circle"></i>
+                    <h4>结果反馈</h4>
+                    <p>历史记录</p>
+                </div>
+            </div>
+
+            <div class="workflow-loop fade-in">
+                <i class="fas fa-sync-alt"></i>
+                <span>循环迭代：根据执行结果继续下一步操作，第5次迭代自动进行阶段性总结</span>
+            </div>
+
+            <div style="margin-top: 3rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem;">
+                <div style="background: var(--dark); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: var(--radius-lg); padding: 1.5rem;">
+                    <h4 style="font-size: 1.1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                        <i class="fas fa-eye" style="color: var(--primary-light);"></i>
+                        视觉模式
+                    </h4>
+                    <p style="color: var(--gray); font-size: 0.9375rem; line-height: 1.7;">
+                        自动截取屏幕上传给 AI，通过视觉模型分析当前界面状态，适合支持图像识别的模型（如 GLM-4.6v-flash）。
+                    </p>
+                </div>
+                <div style="background: var(--dark); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: var(--radius-lg); padding: 1.5rem;">
+                    <h4 style="font-size: 1.1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                        <i class="fas fa-keyboard" style="color: var(--secondary);"></i>
+                        纯文本模式
+                    </h4>
+                    <p style="color: var(--gray); font-size: 0.9375rem; line-height: 1.7;">
+                        通过 UI Automation 控件列表或视觉模型转述理解界面，适合不支持视觉的纯文本模型（如 GPT-3.5）。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Demo Section -->
+    <section class="section demo-section">
+        <div class="section-header fade-in">
+            <span class="section-label">真实案例</span>
+            <h2 class="section-title">实际运行效果</h2>
+            <p class="section-subtitle">展示软件执行真实任务的完整过程，从输入指令到任务完成</p>
+        </div>
+
+        <div class="demo-container">
+            <div class="demo-card fade-in">
+                <div class="demo-header">
+                    <div class="demo-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <div class="demo-title">
+                        <h3>打开易语言并创建窗口程序</h3>
+                        <p>完整执行流程 - 共 4 次迭代</p>
+                    </div>
+                </div>
+                <div class="demo-content">
+                    <div class="demo-steps">
+                        <div class="demo-step">
+                            <div class="demo-step-number">1</div>
+                            <div class="demo-step-content">
+                                <h4>获取已安装应用列表</h4>
+                                <p>AI 首先检查系统中是否安装了易语言</p>
+                                <div class="demo-log">
+                                    <span class="action">[动作]</span> 执行 Installed 获取应用列表<br>
+                                    <span class="success">[结果]</span> 已获取 222 个应用，找到易语言5.95
+                                </div>
+                            </div>
+                        </div>
+                        <div class="demo-step">
+                            <div class="demo-step-number">2</div>
+                            <div class="demo-step-content">
+                                <h4>启动易语言应用</h4>
+                                <p>通过可执行文件路径启动应用</p>
+                                <div class="demo-log">
+                                    <span class="action">[动作]</span> 执行 Launch 启动易语言5.95<br>
+                                    <span class="info">[路径]</span> D:\Program Files (x86)\e\e.exe<br>
+                                    <span class="success">[结果]</span> 应用启动成功
+                                </div>
+                            </div>
+                        </div>
+                        <div class="demo-step">
+                            <div class="demo-step-number">3</div>
+                            <div class="demo-step-content">
+                                <h4>等待应用加载</h4>
+                                <p>等待易语言界面完全加载</p>
+                                <div class="demo-log">
+                                    <span class="action">[动作]</span> 执行 Wait 等待 3 秒<br>
+                                    <span class="success">[结果]</span> 易语言开发环境已就绪
+                                </div>
+                            </div>
+                        </div>
+                        <div class="demo-step">
+                            <div class="demo-step-number">4</div>
+                            <div class="demo-step-content">
+                                <h4>创建窗口程序</h4>
+                                <p>点击文件菜单，选择新建窗口程序</p>
+                                <div class="demo-log">
+                                    <span class="action">[动作]</span> 点击文件菜单<br>
+                                    <span class="action">[动作]</span> 点击"新建.窗口程序"选项<br>
+                                    <span class="success">[结果]</span> 任务完成！已成功创建窗口程序
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="demo-card fade-in">
+                <div class="demo-header">
+                    <div class="demo-icon" style="background: var(--gradient-2);">
+                        <i class="fas fa-info-circle"></i>
+                    </div>
+                    <div class="demo-title">
+                        <h3>执行特点</h3>
+                        <p>从实际输出中观察到的能力</p>
+                    </div>
+                </div>
+                <div class="demo-content">
+                    <div class="features-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
+                        <div class="feature-card" style="padding: 1.5rem;">
+                            <div class="feature-icon" style="width: 48px; height: 48px; font-size: 1.25rem;">
+                                <i class="fas fa-list-ol"></i>
+                            </div>
+                            <h3 class="feature-title" style="font-size: 1.1rem;">迭代执行</h3>
+                            <p class="feature-desc" style="font-size: 0.875rem;">每次迭代都会截图分析，根据当前屏幕状态决定下一步操作</p>
+                        </div>
+                        <div class="feature-card" style="padding: 1.5rem;">
+                            <div class="feature-icon" style="width: 48px; height: 48px; font-size: 1.25rem;">
+                                <i class="fas fa-comments"></i>
+                            </div>
+                            <h3 class="feature-title" style="font-size: 1.1rem;">思考过程</h3>
+                            <p class="feature-desc" style="font-size: 0.875rem;">AI 会输出详细的思考过程，让用户了解决策原因</p>
+                        </div>
+                        <div class="feature-card" style="padding: 1.5rem;">
+                            <div class="feature-icon" style="width: 48px; height: 48px; font-size: 1.25rem;">
+                                <i class="fas fa-bug"></i>
+                            </div>
+                            <h3 class="feature-title" style="font-size: 1.1rem;">调试信息</h3>
+                            <p class="feature-desc" style="font-size: 0.875rem;">详细的调试日志，便于排查问题和了解执行细节</p>
+                        </div>
+                        <div class="feature-card" style="padding: 1.5rem;">
+                            <div class="feature-icon" style="width: 48px; height: 48px; font-size: 1.25rem;">
+                                <i class="fas fa-history"></i>
+                            </div>
+                            <h3 class="feature-title" style="font-size: 1.1rem;">历史反馈</h3>
+                            <p class="feature-desc" style="font-size: 0.875rem;">每次迭代都会将历史动作反馈给 AI，避免重复操作</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Actions Section -->
+    <section id="actions" class="section">
+        <div class="section-header fade-in">
+            <span class="section-label">动作支持</span>
+            <h2 class="section-title">丰富的操作指令</h2>
+            <p class="section-subtitle">支持多种类型的自动化操作，满足各种桌面自动化需求</p>
+        </div>
+
+        <div class="actions-tabs fade-in">
+            <div class="tabs-header">
+                <button class="tab-btn active" data-tab="basic">基础操作</button>
+                <button class="tab-btn" data-tab="app">应用管理</button>
+                <button class="tab-btn" data-tab="file">文件管理</button>
+                <button class="tab-btn" data-tab="uia">UI Automation</button>
+                <button class="tab-btn" data-tab="window">窗口操作</button>
+                <button class="tab-btn" data-tab="mcp">MCP 工具</button>
+            </div>
+
+            <div class="tab-content active" id="basic-tab">
+                <div class="actions-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>动作</th>
+                                <th>说明</th>
+                                <th>示例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="action-tag">Tap / Click</span></td>
+                                <td>点击屏幕指定位置</td>
+                                <td>do(action="Tap", element=[100,200])</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">RightClick</span></td>
+                                <td>右键点击</td>
+                                <td>do(action="RightClick", element=[500,300])</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Type</span></td>
+                                <td>输入文本（支持中文）</td>
+                                <td>do(action="Type", text="影视飓风")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Swipe</span></td>
+                                <td>滑动屏幕</td>
+                                <td>do(action="Swipe", start=[500,800], end=[500,200])</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Back</span></td>
+                                <td>返回上一级</td>
+                                <td>do(action="Back")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Home</span></td>
+                                <td>回到主页</td>
+                                <td>do(action="Home")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Wait</span></td>
+                                <td>等待页面加载</td>
+                                <td>do(action="Wait", duration=3)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Take_over</span></td>
+                                <td>请求用户接管</td>
+                                <td>do(action="Take_over", message="请手动完成")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-content" id="app-tab">
+                <div class="actions-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>动作</th>
+                                <th>说明</th>
+                                <th>示例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="action-tag">Launch</span></td>
+                                <td>启动应用</td>
+                                <td>do(action="Launch", app="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Installed</span></td>
+                                <td>获取已安装应用列表</td>
+                                <td>do(action="Installed")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Execute</span></td>
+                                <td>执行 PowerShell 命令</td>
+                                <td>do(action="Execute", command="calc")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">finish</span></td>
+                                <td>任务完成</td>
+                                <td>finish(message="任务完成")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-content" id="file-tab">
+                <div class="actions-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>动作</th>
+                                <th>说明</th>
+                                <th>示例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="action-tag">FileList</span></td>
+                                <td>列出目录内容</td>
+                                <td>do(action="FileList", path="C:\\Users")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileRead</span></td>
+                                <td>读取文件内容</td>
+                                <td>do(action="FileRead", path="test.txt")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileHead</span></td>
+                                <td>读取文件前N行</td>
+                                <td>do(action="FileHead", path="log.txt", lines=50)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileTail</span></td>
+                                <td>读取文件后N行</td>
+                                <td>do(action="FileTail", path="log.txt", lines=50)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileRange</span></td>
+                                <td>读取文件指定行</td>
+                                <td>do(action="FileRange", path="code.cpp", start=10, end=20)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileWrite</span></td>
+                                <td>写入文件</td>
+                                <td>do(action="FileWrite", path="test.txt", content="Hello")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileAppend</span></td>
+                                <td>追加到文件</td>
+                                <td>do(action="FileAppend", path="log.txt", content="New line")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileMkdir</span></td>
+                                <td>创建目录</td>
+                                <td>do(action="FileMkdir", path="NewFolder")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileDelete</span></td>
+                                <td>删除文件</td>
+                                <td>do(action="FileDelete", path="old.txt")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileMove</span></td>
+                                <td>移动文件</td>
+                                <td>do(action="FileMove", source="a.txt", destination="b.txt")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileCopy</span></td>
+                                <td>复制文件</td>
+                                <td>do(action="FileCopy", source="a.txt", destination="b.txt")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileInfo</span></td>
+                                <td>获取文件信息</td>
+                                <td>do(action="FileInfo", path="file.exe")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileSearch</span></td>
+                                <td>搜索文件</td>
+                                <td>do(action="FileSearch", path=".", pattern="*.txt")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileTree</span></td>
+                                <td>获取目录树</td>
+                                <td>do(action="FileTree", path=".", depth=3)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">FileRun</span></td>
+                                <td>执行可执行文件</td>
+                                <td>do(action="FileRun", path="app.exe")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-content" id="uia-tab">
+                <div class="actions-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>动作</th>
+                                <th>说明</th>
+                                <th>示例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="action-tag">UIA_ListWindows</span></td>
+                                <td>列出所有顶层窗口</td>
+                                <td>do(action="UIA_ListWindows")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">UIA_GetWindowTree</span></td>
+                                <td>获取窗口控件树</td>
+                                <td>do(action="UIA_GetWindowTree", window="记事本", depth=3)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">UIA_GetActiveTree</span></td>
+                                <td>获取活动窗口控件树</td>
+                                <td>do(action="UIA_GetActiveTree", depth=3)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">UIA_GetControlAtCursor</span></td>
+                                <td>获取鼠标位置控件</td>
+                                <td>do(action="UIA_GetControlAtCursor")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">UIA_GetControlAtPoint</span></td>
+                                <td>获取指定位置控件</td>
+                                <td>do(action="UIA_GetControlAtPoint", x=100, y=200)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">UIA_ClickControl</span></td>
+                                <td>通过名称点击控件</td>
+                                <td>do(action="UIA_ClickControl", window="记事本", control="保存")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-content" id="window-tab">
+                <div class="actions-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>动作</th>
+                                <th>说明</th>
+                                <th>示例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="action-tag">Window_Minimize</span></td>
+                                <td>最小化窗口</td>
+                                <td>do(action="Window_Minimize", window="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_Maximize</span></td>
+                                <td>最大化窗口</td>
+                                <td>do(action="Window_Maximize", window="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_Restore</span></td>
+                                <td>还原窗口</td>
+                                <td>do(action="Window_Restore", window="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_Close</span></td>
+                                <td>关闭窗口</td>
+                                <td>do(action="Window_Close", window="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_Activate</span></td>
+                                <td>激活窗口</td>
+                                <td>do(action="Window_Activate", window="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_Topmost</span></td>
+                                <td>窗口置顶</td>
+                                <td>do(action="Window_Topmost", window="记事本", topmost=true)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_Move</span></td>
+                                <td>移动窗口</td>
+                                <td>do(action="Window_Move", window="记事本", x=100, y=100, width=800, height=600)</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_GetRect</span></td>
+                                <td>获取窗口位置</td>
+                                <td>do(action="Window_GetRect", window="记事本")</td>
+                            </tr>
+                            <tr>
+                                <td><span class="action-tag">Window_GetState</span></td>
+                                <td>获取窗口状态</td>
+                                <td>do(action="Window_GetState", window="记事本")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="tab-content" id="mcp-tab">
+                <div class="actions-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>动作</th>
+                                <th>说明</th>
+                                <th>示例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="action-tag">MCP_Tool</span></td>
+                                <td>调用 MCP 服务器工具</td>
+                                <td>do(action="MCP_Tool", server="fetch", tool="fetch", args='{"url":"https://example.com"}')</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div style="margin-top: 1.5rem; padding: 1.25rem; background: rgba(99, 102, 241, 0.05); border: 1px dashed rgba(99, 102, 241, 0.3); border-radius: var(--radius); color: var(--gray); font-size: 0.9375rem;">
+                    <p style="margin-bottom: 0.5rem;"><i class="fas fa-info-circle" style="color: var(--primary-light);"></i> <strong>MCP 支持说明：</strong></p>
+                    <ul style="margin-left: 1.5rem; line-height: 1.8;">
+                        <li>支持 stdio 和 HTTP (streamable_http) 两种传输方式</li>
+                        <li>命令行版本：使用 <code style="background: rgba(0,0,0,0.2); padding: 0.125rem 0.375rem; border-radius: 4px;">mcp</code> 命令管理 MCP 服务器</li>
+                        <li>Web 版本：在 MCP 页面添加和连接服务器</li>
+                        <li>AI 可自动调用已连接的 MCP 工具获取外部信息</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section id="architecture" class="section architecture">
+        <div class="section-header fade-in">
+            <span class="section-label">系统架构</span>
+            <h2 class="section-title">模块化设计</h2>
+            <p class="section-subtitle">清晰的模块划分，易于扩展和维护</p>
+        </div>
+
+        <div class="architecture-content fade-in">
+            <div class="arch-diagram">
+                <div class="arch-layer">
+                    <div class="arch-layer-title">顶层模块</div>
+                    <div class="arch-modules">
+                        <div class="arch-module">
+                            <i class="fas fa-eye"></i>
+                            <h4>视觉感知</h4>
+                            <p>Screenshot</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-brain"></i>
+                            <h4>AI 决策</h4>
+                            <p>LLM API</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-play-circle"></i>
+                            <h4>动作执行</h4>
+                            <p>Action Executor</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-th-large"></i>
+                            <h4>应用管理</h4>
+                            <p>AppManager</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arch-connector">
+                    <i class="fas fa-arrow-down"></i>
+                </div>
+
+                <div class="arch-layer">
+                    <div class="arch-layer-title">核心模块</div>
+                    <div class="arch-modules">
+                        <div class="arch-module">
+                            <i class="fas fa-plug"></i>
+                            <h4>AI Provider</h4>
+                            <p>接口定义</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-cogs"></i>
+                            <h4>OpenAI Provider</h4>
+                            <p>兼容实现</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-exchange-alt"></i>
+                            <h4>Provider Manager</h4>
+                            <p>提供商管理</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-code"></i>
+                            <h4>Action Parser</h4>
+                            <p>动作解析</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-play-circle"></i>
+                            <h4>Action Executor</h4>
+                            <p>动作执行</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-th-large"></i>
+                            <h4>App Manager</h4>
+                            <p>应用管理</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-folder"></i>
+                            <h4>File Manager</h4>
+                            <p>文件管理</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-mouse-pointer"></i>
+                            <h4>UI Automation</h4>
+                            <p>控件操作</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-file-code"></i>
+                            <h4>Prompt Templates</h4>
+                            <p>提示词模板</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-lock"></i>
+                            <h4>Secure Storage</h4>
+                            <p>安全存储</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-network-wired"></i>
+                            <h4>MCP Client</h4>
+                            <p>MCP 客户端</p>
+                        </div>
+                        <div class="arch-module">
+                            <i class="fas fa-server"></i>
+                            <h4>Web Server</h4>
+                            <p>Web 服务</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section id="quickstart" class="section">
+        <div class="section-header fade-in">
+            <span class="section-label">快速开始</span>
+            <h2 class="section-title">开始使用</h2>
+            <p class="section-subtitle">简单几步即可体验 AI 自动化助手的强大功能</p>
+        </div>
+
+        <div style="max-width: 900px; margin: 0 auto 3rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+            <div style="background: var(--dark-light); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: var(--radius-lg); padding: 1.25rem; text-align: center;">
+                <i class="fas fa-terminal" style="font-size: 1.5rem; color: var(--primary-light); margin-bottom: 0.75rem;"></i>
+                <h4 style="font-weight: 600; margin-bottom: 0.5rem;">命令行版本</h4>
+                <p style="color: var(--gray); font-size: 0.875rem;">aries_agent.exe<br>经典命令行界面，适合快速操作</p>
+            </div>
+            <div style="background: var(--dark-light); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: var(--radius-lg); padding: 1.25rem; text-align: center;">
+                <i class="fas fa-globe" style="font-size: 1.5rem; color: var(--secondary); margin-bottom: 0.75rem;"></i>
+                <h4 style="font-weight: 600; margin-bottom: 0.5rem;">Web GUI 版本</h4>
+                <p style="color: var(--gray); font-size: 0.875rem;">aries_web.exe<br>浏览器访问 http://localhost:8080</p>
+            </div>
+        </div>
+
+        <div class="quickstart-steps">
+            <div class="step-item fade-in">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>下载并运行程序</h3>
+                    <p>从 GitHub Releases 下载最新版本。命令行版本双击运行 aries_agent.exe，Web 版本运行 aries_web.exe 后浏览器访问 localhost:8080</p>
+                    <div class="code-block">
+                        <span class="comment"># 命令行版本</span><br>
+                        <span class="command">aries_agent.exe</span><br><br>
+                        <span class="comment"># Web GUI 版本</span><br>
+                        <span class="command">aries_web.exe</span><br>
+                        <span class="comment"># 浏览器访问 http://localhost:8080</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="step-item fade-in">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <h3>配置 API Key</h3>
+                    <p>程序启动后，输入 key 打开浏览器获取智谱 AI API Key，或输入 provider 配置自定义 OpenAI 兼容 API 提供商</p>
+                    <div class="code-block">
+                        <span class="comment"># 输入 key 获取智谱 AI API Key</span><br>
+                        <span class="comment"># 或输入 provider 配置自定义提供商</span><br>
+                        <span class="comment"># 支持保存多个提供商配置，随时切换</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="step-item fade-in">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <h3>选择模型类型</h3>
+                    <p>程序会询问"该模型是否支持视觉（图像识别）?"，根据模型能力选择合适模式</p>
+                    <div class="code-block">
+                        <span class="comment"># 输入 y 使用视觉模式（截图上传）</span><br>
+                        <span class="comment"># 输入 n 使用纯文本模式（控件列表/视觉转述）</span><br><br>
+                        <span class="comment"># 纯文本模式可选配置视觉模型用于屏幕转述</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="step-item fade-in">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <h3>输入任务目标</h3>
+                    <p>使用自然语言描述你想完成的任务，AI 会自动分析并执行</p>
+                    <div class="code-block">
+                        <span class="comment"># 示例任务</span><br>
+                        <span class="command">打开记事本</span><br>
+                        <span class="command">打开计算器计算 123+456</span><br>
+                        <span class="command">用哔哩哔哩搜索影视飓风</span><br>
+                        <span class="command">在D盘创建一个test文件夹</span><br>
+                        <span class="command">总结C:\Users\Username\Documents\project</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ Section -->
+    <section id="faq" class="section">
+        <div class="section-header fade-in">
+            <span class="section-label">常见问题</span>
+            <h2 class="section-title">FAQ</h2>
+            <p class="section-subtitle">常见问题解答，帮助你快速解决问题</p>
+        </div>
+
+        <div class="faq-list">
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>程序启动后闪退怎么办？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>检查是否安装了必要的运行库，或查看 aries_agent.log 日志文件获取详细错误信息。确保你的系统满足 Windows 10/11 的要求，并且显卡支持 GDI+。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>API Key 验证失败怎么解决？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>首先检查网络连接是否正常。如果使用的是智谱 AI，请确保 API Key 正确且有足够的额度。也可以尝试使用 provider 命令切换到其他 API 提供商，如 SiliconFlow 等 OpenAI 兼容的服务。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>支持哪些 API 提供商？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>默认支持智谱 AI（GLM-4.6v-flash），同时也支持任何 OpenAI 兼容的 API。你可以通过 provider 命令添加自定义提供商，如 SiliconFlow、OpenRouter 等。支持保存多个提供商配置，随时切换使用。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>点击坐标不准确怎么办？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>程序使用相对坐标 (0-1000) 自动适配屏幕分辨率，通常能够准确定位。如果遇到坐标偏差，可能是由于 DPI 缩放或特殊显示设置导致的。可以尝试调整系统 DPI 设置，或在提示词中明确指定精确的坐标位置。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>文件读取失败是什么原因？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>程序会显示具体的错误原因，包括：文件不存在、无权限访问、文件被占用等。AI 会根据错误信息自动调整策略，如尝试其他路径、请求管理员权限等。确保文件路径正确，且程序有足够的权限访问目标文件。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>无法启动应用怎么办？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>某些 UWP 应用可能需要特殊处理，程序会自动尝试多种启动方式。确保应用已正确安装，且程序有足够的权限。你也可以尝试使用 Execute 命令直接启动应用的可执行文件。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>遇到"访问量过大"错误怎么办？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>程序会提示是否重试，选择 y 等待 1 秒后自动重试。如果频繁遇到此问题，建议切换到其他 API 提供商，或在非高峰时段使用。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>中文输入不成功怎么办？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>程序已支持中文输入，请确保使用的是最新版本。如果仍有问题，检查系统输入法设置，或尝试使用英文输入法后通过 Type 动作输入中文。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>视觉模型转述失败怎么办？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>程序会自动回退到控件列表模式，并记录详细错误信息到日志。检查视觉模型的 API Key 是否有效，或尝试切换到其他视觉模型。也可以直接使用 UI Automation 控件列表模式。</p>
+                </div>
+            </div>
+
+            <div class="faq-item fade-in">
+                <div class="faq-question">
+                    <h4>如何更新到最新版本？</h4>
+                    <i class="fas fa-chevron-down"></i>
+                </div>
+                <div class="faq-answer">
+                    <p>程序内置了更新检查功能，启动时会自动检查是否有新版本。你也可以输入 update 命令手动检查更新，或关注 GitHub 仓库的 Releases 页面下载最新版本。更新时只需替换 exe 文件即可，配置信息会自动保留。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Download Section -->
+    <section id="download" class="section download">
+        <div class="section-header fade-in">
+            <span class="section-label">立即下载</span>
+            <h2 class="section-title">开始你的自动化之旅</h2>
+            <p class="section-subtitle">免费开源，即刻体验</p>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; max-width: 800px; margin: 0 auto;">
+            <div class="download-card fade-in">
+                <div class="download-icon">
+                    <i class="fas fa-terminal"></i>
+                </div>
+                <h3>命令行版本</h3>
+                <p>aries_agent.exe</p>
+                <p style="font-size: 14px; color: var(--gray);">经典命令行界面，适合快速操作</p>
+                
+                <div class="version-info">
+                    <span><i class="fas fa-check-circle"></i> 轻量快速</span>
+                    <span><i class="fas fa-check-circle"></i> 资源占用低</span>
+                </div>
+
+                <a href="https://github.com/yunsjxh/Open-Aries-AI/releases" class="btn btn-primary btn-large" target="_blank">
+                    <i class="fas fa-download"></i>
+                    下载
+                </a>
+            </div>
+
+            <div class="download-card fade-in">
+                <div class="download-icon">
+                    <i class="fas fa-globe"></i>
+                </div>
+                <h3>Web GUI 版本</h3>
+                <p>aries_web.exe</p>
+                <p style="font-size: 14px; color: var(--gray);">现代 Web 界面，可视化操作</p>
+                
+                <div class="version-info">
+                    <span><i class="fas fa-check-circle"></i> 图形界面</span>
+                    <span><i class="fas fa-check-circle"></i> 实时日志</span>
+                </div>
+
+                <a href="https://github.com/yunsjxh/Open-Aries-AI/releases" class="btn btn-primary btn-large" target="_blank">
+                    <i class="fas fa-download"></i>
+                    下载
+                </a>
+            </div>
+        </div>
+
+        <div style="text-align: center; margin-top: 24px;" class="fade-in">
+            <p style="color: var(--gray); font-size: 14px;">
+                <i class="fas fa-info-circle"></i>
+                最新版本 v1.3.0.1，支持 Windows 10/11 | 
+                <a href="https://github.com/yunsjxh/Open-Aries-AI" target="_blank" style="color: var(--primary-light);">查看源码</a>
+            </p>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <a href="#" class="logo">
+                    <div class="logo-icon">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <span>Open-Aries-AI</span>
+                </a>
+                <p>基于大语言模型的 Windows 桌面自动化助手，让 AI 成为你的得力助手。</p>
+            </div>
+
+            <div class="footer-links">
+                <h4>产品</h4>
+                <ul>
+                    <li><a href="#features">功能特性</a></li>
+                    <li><a href="#workflow">工作流程</a></li>
+                    <li><a href="#actions">动作支持</a></li>
+                    <li><a href="#download">下载</a></li>
+                </ul>
+            </div>
+
+            <div class="footer-links">
+                <h4>资源</h4>
+                <ul>
+                    <li><a href="#quickstart">快速开始</a></li>
+                    <li><a href="#faq">常见问题</a></li>
+                    <li><a href="https://github.com/yunsjxh/Open-Aries-AI/blob/main/README.md" target="_blank">文档</a></li>
+                    <li><a href="#architecture">系统架构</a></li>
+                </ul>
+            </div>
+
+            <div class="footer-links">
+                <h4>社区</h4>
+                <ul>
+                    <li><a href="https://github.com/yunsjxh/Open-Aries-AI" target="_blank">GitHub</a></li>
+                    <li><a href="https://github.com/yunsjxh/Open-Aries-AI/issues" target="_blank">问题反馈</a></li>
+                    <li><a href="https://github.com/yunsjxh/Open-Aries-AI/releases" target="_blank">更新日志</a></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer-bottom">
+            <p>&copy; 2026 Open-Aries-AI. 基于 MIT 协议开源。</p>
+            <div class="social-links">
+                <a href="https://github.com/yunsjxh/Open-Aries-AI" target="_blank" title="GitHub">
+                    <i class="fab fa-github"></i>
+                </a>
+                <a href="#" title="Discord">
+                    <i class="fab fa-discord"></i>
+                </a>
+                <a href="#" title="Twitter">
+                    <i class="fab fa-twitter"></i>
+                </a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Navbar scroll effect
+        const navbar = document.querySelector('.navbar');
+        window.addEventListener('scroll', () => {
+            if (window.scrollY > 50) {
+                navbar.classList.add('scrolled');
+            } else {
+                navbar.classList.remove('scrolled');
+            }
+        });
+
+        // Smooth scroll for navigation links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+
+        // Tab switching
+        const tabBtns = document.querySelectorAll('.tab-btn');
+        const tabContents = document.querySelectorAll('.tab-content');
+
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tabId = btn.getAttribute('data-tab');
+                
+                tabBtns.forEach(b => b.classList.remove('active'));
+                tabContents.forEach(c => c.classList.remove('active'));
+                
+                btn.classList.add('active');
+                document.getElementById(`${tabId}-tab`).classList.add('active');
+            });
+        });
+
+        // FAQ accordion
+        const faqItems = document.querySelectorAll('.faq-item');
+
+        faqItems.forEach(item => {
+            const question = item.querySelector('.faq-question');
+            question.addEventListener('click', () => {
+                const isActive = item.classList.contains('active');
+                
+                // Close all items
+                faqItems.forEach(i => i.classList.remove('active'));
+                
+                // Open clicked item if it wasn't active
+                if (!isActive) {
+                    item.classList.add('active');
+                }
+            });
+        });
+
+        // Intersection Observer for fade-in animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.fade-in').forEach(el => {
+            observer.observe(el);
+        });
+
+        // Custom Cursor
+        const cursor = document.createElement('div');
+        cursor.className = 'cursor';
+        document.body.appendChild(cursor);
+
+        const cursorFollower = document.createElement('div');
+        cursorFollower.className = 'cursor-follower';
+        document.body.appendChild(cursorFollower);
+
+        let mouseX = 0, mouseY = 0;
+        let cursorX = 0, cursorY = 0;
+        let followerX = 0, followerY = 0;
+
+        document.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+        });
+
+        function animateCursor() {
+            // Smooth cursor movement
+            cursorX += (mouseX - cursorX) * 0.2;
+            cursorY += (mouseY - cursorY) * 0.2;
+            cursor.style.left = cursorX + 'px';
+            cursor.style.top = cursorY + 'px';
+
+            // Smoother follower movement
+            followerX += (mouseX - followerX) * 0.1;
+            followerY += (mouseY - followerY) * 0.1;
+            cursorFollower.style.left = followerX + 'px';
+            cursorFollower.style.top = followerY + 'px';
+
+            requestAnimationFrame(animateCursor);
+        }
+        animateCursor();
+
+        // Hover effects
+        const interactiveElements = document.querySelectorAll('a, button, .btn, .download-btn, .tab-btn, .faq-question, .feature-card, .arch-module, .workflow-step');
+        interactiveElements.forEach(el => {
+            el.addEventListener('mouseenter', () => {
+                cursor.classList.add('hover');
+                cursorFollower.classList.add('hover');
+            });
+            el.addEventListener('mouseleave', () => {
+                cursor.classList.remove('hover');
+                cursorFollower.classList.remove('hover');
+            });
+        });
+
+        // Click effects
+        document.addEventListener('mousedown', () => {
+            cursor.classList.add('click');
+        });
+        document.addEventListener('mouseup', () => {
+            cursor.classList.remove('click');
+        });
+
+        // Terminal typing animation
+        const commandText = '打开易语言并创建一个窗口程序';
+        const typingText = document.getElementById('typing-text');
+        const typingCursor = document.getElementById('typing-cursor');
+        const resultOutput = document.getElementById('result-output');
+        const resultOutput2 = document.getElementById('result-output-2');
+        const resultOutput3 = document.getElementById('result-output-3');
+        const resultOutput4 = document.getElementById('result-output-4');
+        let charIndex = 0;
+
+        function typeWriter() {
+            if (charIndex < commandText.length) {
+                typingText.textContent += commandText.charAt(charIndex);
+                charIndex++;
+                setTimeout(typeWriter, 150);
+            } else {
+                // 命令输入完成后，隐藏光标并显示第一个结果
+                typingCursor.style.display = 'none';
+                setTimeout(() => {
+                    resultOutput.style.display = 'block';
+                    // 2秒后显示第二个迭代结果
+                    setTimeout(() => {
+                        resultOutput2.style.display = 'block';
+                        // 2秒后显示第三个迭代结果
+                        setTimeout(() => {
+                            resultOutput3.style.display = 'block';
+                            // 2秒后显示第四个迭代结果
+                            setTimeout(() => {
+                                resultOutput4.style.display = 'block';
+                            }, 2000);
+                        }, 2000);
+                    }, 2000);
+                }, 2000);
+            }
+        }
+
+        // 页面加载后开始打字动画
+        setTimeout(typeWriter, 1500);
+    </script>
+</body>
+</html>
