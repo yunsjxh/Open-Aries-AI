@@ -171,6 +171,39 @@ public:
 private:
     Config config_;
     LogCallback logCallback_;
+    std::map<std::string, int> fileListCount_;  // track FileList calls per directory
+
+    // 检查路径是否为受保护的系统路径
+    static bool isProtectedPath(const std::string& path) {
+        // 规范化路径：统一使用反斜杠和大写
+        std::string p = path;
+        for (auto& c : p) { if (c == '/') c = '\\'; c = std::toupper((unsigned char)c); }
+
+        // 系统根目录（如 C:\ 或 C:）
+        if (p.length() == 2 && p[1] == ':' && std::isalpha((unsigned char)p[0]))
+            return true;
+        if (p.length() == 3 && p[1] == ':' && p[2] == '\\' && std::isalpha((unsigned char)p[0]))
+            return true;
+
+        // 关键系统目录
+        static const std::vector<std::string> protectedDirs = {
+            "\\WINDOWS", "\\WINDOWS\\", "\\PROGRAM FILES", "\\PROGRAM FILES\\",
+            "\\PROGRAM FILES (X86)", "\\PROGRAM FILES (X86)\\",
+            "\\SYSTEM32", "\\SYSWOW64", "\\BOOT", "\\RECOVERY"
+        };
+
+        // 检查是否在系统目录下，或恰好在根目录
+        for (const auto& dir : protectedDirs) {
+            // 形如 C:\WINDOWS\... 或 C:\WINDOWS
+            if (p.length() >= 3 && p[1] == ':' && p[2] == '\\') {
+                std::string afterDrive = p.substr(2);  // "\WINDOWS\..."
+                if (afterDrive == dir || afterDrive.find(dir) == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     void log(const std::string& message) {
         if (logCallback_) {
@@ -715,9 +748,22 @@ private:
     ExecutionResult executeFileList(const ParsedAgentAction& action) {
         std::string path = readField(action.fields, {"path"});
         if (path.empty()) path = ".";
-        
+
+        // 规范化路径作为 key
+        std::string key = path;
+        for (auto& c : key) { if (c == '/') c = '\\'; }
+
+        int& count = fileListCount_[key];
+        count++;
+        if (count > 2) {
+            std::string msg = "FileList \"" + path + "\" 已调用 " + std::to_string(count)
+                + " 次，结果不会改变。请改用其他操作。";
+            log(msg);
+            return ExecutionResult(false, msg);
+        }
+
         log("执行操作: 列出目录 " + path);
-        
+
         std::string result = FileManager::generateDirectoryDescription(path);
         std::cout << "\n" << result << std::endl;
         return ExecutionResult(true, result);
@@ -820,13 +866,20 @@ private:
     ExecutionResult executeFileWrite(const ParsedAgentAction& action) {
         std::string path = readField(action.fields, {"path"});
         std::string content = readField(action.fields, {"content"});
-        
+
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
         }
-        
+
+        if (isProtectedPath(path)) {
+            std::string msg = "拒绝写入: " + path
+                + " 是系统保护路径。请改用用户目录或当前工作目录下的相对路径。";
+            log(msg);
+            return ExecutionResult(false, msg);
+        }
+
         log("执行操作: 写入文件 " + path);
-        
+
         bool success = FileManager::writeTextFile(path, content, false);
         std::string result = success ? "文件写入成功" : "文件写入失败";
         std::cout << result << std::endl;
@@ -836,13 +889,20 @@ private:
     ExecutionResult executeFileAppend(const ParsedAgentAction& action) {
         std::string path = readField(action.fields, {"path"});
         std::string content = readField(action.fields, {"content"});
-        
+
         if (path.empty()) {
             return ExecutionResult(false, "错误: 未指定文件路径");
         }
-        
+
+        if (isProtectedPath(path)) {
+            std::string msg = "拒绝写入: " + path
+                + " 是系统保护路径。请改用用户目录或当前工作目录下的相对路径。";
+            log(msg);
+            return ExecutionResult(false, msg);
+        }
+
         log("执行操作: 追加到文件 " + path);
-        
+
         bool success = FileManager::writeTextFile(path, content, true);
         std::string result = success ? "文件追加成功" : "文件追加失败";
         std::cout << result << std::endl;

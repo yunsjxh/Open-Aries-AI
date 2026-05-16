@@ -4,14 +4,16 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows-blue)](https://www.microsoft.com/windows)
 [![Language](https://img.shields.io/badge/Language-C%2B%2B17-orange)](https://isocpp.org/)
 
-Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。通过截图分析/控件树转述 + AI 决策 + 自动执行，实现自然语言控制电脑操作。
+Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。通过截图分析/控件树转述 + AI 预规划 + 逐步执行，实现自然语言控制电脑操作。
 
 **核心优势**: 
+- **AI 预规划**：执行前自动制定分步计划，CLI/桌面悬浮窗/Web UI 三端同步显示
 - 支持视觉模型和纯文本模型（可配置视觉模型转述）
 - 支持智谱 AI 和自定义 OpenAI 兼容 API，一键切换不同厂商模型
 - 完整的 UI Automation 控件操作和窗口管理
 - 支持中文输入和文件管理
 - 完整的动作历史反馈机制
+- 代码级安全防护（系统路径保护、重复操作检测）
 
 ## 📸 界面截图
 
@@ -25,18 +27,21 @@ Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。
 
 | 功能 | 描述 |
 |------|------|
+| **🧠 AI 预规划** | 执行前自动生成分步计划，CLI/桌面悬浮窗/Web UI 三端同步显示 |
 | **🖼️ 视觉感知** | 自动截取屏幕，通过视觉模型分析当前界面状态 |
 | **📝 纯文本模式** | 不支持视觉的模型可通过控件列表或视觉模型转述理解界面 |
-| **🧠 智能决策** | AI 根据界面信息和用户指令，规划下一步操作 |
 | **🤖 自动执行** | 模拟鼠标点击、键盘输入、滑动等操作 |
 | **📱 应用管理** | 获取已安装应用列表，智能启动应用程序 |
-| **📁 文件管理** | 完整的文件操作：读取、写入、搜索、执行文件（支持Unicode路径） |
+| **📁 文件管理** | 完整的文件操作：读取、写入、搜索、执行文件（Unicode路径） |
 | **🎮 UI Automation** | 获取控件树、点击控件、窗口操作（最小化/最大化/置顶等） |
 | **💻 命令执行** | 通过 PowerShell 执行系统命令 |
 | **🔒 安全存储** | DPAPI + 硬件绑定的双重加密存储 |
 | **📝 中文支持** | 完美支持中文输入和文件路径 |
 | **📊 动作历史** | 完整的动作历史记录和反馈，避免重复操作 |
 | **🔄 智能总结** | 第5次迭代自动提示AI进行阶段性总结 |
+| **🛡️ 安全防护** | 系统路径写入保护、FileList 重复调用检测、命令安全审查 |
+| **🪟 桌面悬浮窗** | 实时显示迭代进度、当前动作、Token 用量和执行计划 |
+| **📋 结构化日志** | JSON 格式日志，环形缓冲区，支持增量查询和 Web 实时展示 |
 
 ## 📋 系统架构
 
@@ -56,13 +61,15 @@ Open-Aries-AI 是一个基于大语言模型的 Windows 桌面自动化助手。
 │  ├─ ai_provider.hpp                 (AI Provider 接口)              │
 │  ├─ openai_compatible_provider.hpp  (OpenAI 兼容 Provider)          │
 │  ├─ provider_manager.hpp            (提供商管理器)                  │
-│  ├─ action_parser.hpp               (动作解析)                      │
-│  ├─ action_executor.hpp             (动作执行)                      │
+│  ├─ action_parser.hpp               (动作解析 & 计划解析)           │
+│  ├─ action_executor.hpp             (动作执行 & 安全防护)           │
 │  ├─ app_manager.hpp                 (应用管理)                      │
 │  ├─ file_manager.hpp                (文件管理器)                    │
 │  ├─ ui_automation.hpp               (UI Automation 控件操作)        │
-│  ├─ prompt_templates.hpp            (提示词模板)                    │
-│  └─ secure_storage.hpp              (安全存储)                      │
+│  ├─ prompt_templates.hpp            (提示词模板 & 规划提示词)       │
+│  ├─ secure_storage.hpp              (安全存储)                      │
+│  ├─ logger.hpp                      (结构化日志)                    │
+│  └─ status_window.hpp               (桌面悬浮窗)                    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -265,80 +272,89 @@ aries_agent.exe
 ```
 Open-Aries-AI/
 ├── aries_agent.exe          # 命令行版本
-├── aries_web.exe            # Web GUI 版本（HTML已内嵌）
+├── aries_web.exe            # Web GUI 版本（HTML/JS/CSS 内嵌）
 ├── aries_agent.cpp          # 命令行版本源码
-├── web_main.cpp             # Web 版本源码
+├── web_main.cpp             # Web 版本源码（含内嵌前端）
 ├── README.md                # 本文件
+├── LICENSE                  # MIT 许可证
 │
 ├── ai_provider.hpp          # AI Provider 接口定义
-├── openai_compatible_provider.hpp  # OpenAI 兼容 Provider 实现
+├── openai_compatible_provider.hpp  # OpenAI 兼容 Provider（SSE 流式）
 ├── provider_manager.hpp     # 提供商管理器（单例模式）
-├── action_parser.hpp        # 动作解析器
-├── action_executor.hpp      # 动作执行器
+├── action_parser.hpp        # 动作解析器 & 计划解析器
+├── action_executor.hpp      # 动作执行器（含安全防护）
 ├── app_manager.hpp          # 应用管理器
 ├── file_manager.hpp         # 文件管理器
 ├── ui_automation.hpp        # UI Automation 控件操作
-├── prompt_templates.hpp     # AI 提示词模板
+├── prompt_templates.hpp     # AI 提示词模板（含规划提示词）
 ├── secure_storage.hpp       # API Key 安全存储
+├── security_config.hpp      # 安全配置
+├── logger.hpp               # 结构化日志（JSON 格式，环形缓冲）
+├── status_window.hpp        # 桌面悬浮窗（Win32 GDI）
+├── screenshot.hpp           # 截图功能
 ├── mcp_client.hpp           # MCP 客户端
 ├── mcp_protocol.hpp         # MCP 协议定义
 ├── update_checker.hpp       # 更新检查器
 ├── web_server.hpp           # Web 服务器
-├── screenshot.hpp           # 截图功能
+├── silicon_flow_client_simple.hpp  # 兼容客户端
 │
 └── providers.json           # 提供商配置（加密存储，运行时生成）
 ```
 
 ## 🔧 编译指南
 
-### 使用 MinGW-w64
+### 使用 MinGW-w64 (UCRT64)
 
 ```bash
-g++ -std=c++17 -O2 -o aries_agent.exe aries_agent.cpp \
-    -lgdiplus -lgdi32 -lwininet -lws2_32 -lcrypt32 \
-    -luiautomationcore -lole32 -loleaut32
-```
+# 命令行版本
+g++ -std=c++17 -O2 -mconsole -static aries_agent.cpp -o aries_agent.exe \
+    -lgdiplus -lgdi32 -lws2_32 -lshell32 -ladvapi32 -lcrypt32 \
+    -lpthread -lole32 -loleaut32 -luuid -lwininet
 
-### 使用 Visual Studio
-
-```bash
-cl /std:c++17 /EHsc /O2 aries_agent.cpp \
-    gdiplus.lib gdi32.lib wininet.lib ws2_32.lib crypt32.lib \
-    uiautomationcore.lib ole32.lib oleaut32.lib
+# Web GUI 版本
+g++ -std=c++17 -O2 -mconsole -static web_main.cpp -o aries_web.exe \
+    -lgdiplus -lgdi32 -lws2_32 -lshell32 -ladvapi32 -lcrypt32 \
+    -lpthread -lole32 -loleaut32 -luuid -lwininet
 ```
 
 ### 依赖库
 
 - `gdiplus` - GDI+ (截图)
 - `gdi32` - Windows GDI
-- `wininet` - WinINet (HTTP 请求)
+- `wininet` - WinINet (HTTP/SSE 请求)
 - `ws2_32` - Winsock (网络)
 - `crypt32` - 加密 API (DPAPI)
-- `uiautomationcore` - UI Automation (控件树获取)
+- `shell32` - Shell API
+- `advapi32` - 高级 API (DPAPI)
 - `ole32` - COM 基础库
 - `oleaut32` - COM 自动化库
+- `uuid` - UUID 生成
+- `pthread` - 多线程
 
 ## 🎯 工作流程
 
 ### 视觉模式
 ```
-用户输入 → 屏幕截图 → AI 分析 → 动作解析 → 动作执行 → 结果反馈
-                ↑___________________________________________↓
+用户输入 → AI 预规划 → 屏幕截图 → AI 分析 → 动作解析 → 动作执行 → 结果反馈
+              ↓                          ↑___________________________________________↓
+         显示计划（CLI/悬浮窗/Web）
 ```
 
 ### 纯文本模式
 ```
-用户输入 → 获取控件列表/视觉转述 → AI 分析 → 动作解析 → 动作执行 → 结果反馈
-                        ↑___________________________________________↓
+用户输入 → AI 预规划 → 获取控件列表/视觉转述 → AI 分析 → 动作解析 → 动作执行 → 结果反馈
+              ↓                                      ↑___________________________________________↓
+         显示计划（CLI/悬浮窗/Web）
 ```
 
-1. **界面理解** - 视觉模式截图上传，纯文本模式获取控件列表或视觉转述
-2. **AI 分析** - 将界面信息和用户指令发送给 AI
-3. **动作解析** - 解析 AI 返回的动作指令
-4. **动作执行** - 执行点击、输入、启动应用、窗口操作等
-5. **动作历史反馈** - 将所有动作和思考过程反馈给 AI，避免重复操作
-6. **智能总结** - 第5次迭代时自动提示AI进行阶段性总结
-7. **循环迭代** - 根据执行结果继续下一步操作
+1. **AI 预规划** - 截图当前屏幕，AI 分析后生成 3-8 步执行计划，在 CLI/桌面悬浮窗/Web UI 三端同步展示
+2. **界面理解** - 视觉模式截图上传，纯文本模式获取控件列表或视觉转述
+3. **AI 分析** - 将界面信息、执行计划和用户指令发送给 AI
+4. **动作解析** - 解析 AI 返回的动作指令
+5. **动作执行** - 执行点击、输入、启动应用、窗口操作等（含安全防护检查）
+6. **动作历史反馈** - 将所有动作和思考过程反馈给 AI，避免重复操作
+7. **智能总结** - 第5次迭代时自动提示AI进行阶段性总结
+8. **循环迭代** - 根据执行结果继续下一步操作，直到任务完成或用户停止
 
 ## 🔐 安全特性
 
@@ -372,9 +388,33 @@ A: 程序会显示具体错误原因（文件不存在/无权限/被占用等）
 **Q: 视觉模型转述失败？**
 A: 程序会自动回退到控件列表模式，并记录详细错误信息到日志。
 
+**Q: AI 写入文件到 C:\ 失败？**
+A: v1.3.2 起已内置系统路径保护，写入 C:\、C:\Windows 等路径会被自动拒绝。请提示 AI 使用用户目录或相对路径。
+
+**Q: AI 反复列出同一目录？**
+A: v1.3.2 起已内置 FileList 重复检测，同一目录列出超过 2 次会自动拒绝并提示 AI 更换策略。
+
+**Q: 任务完成后 Web 页面没反应？**
+A: v1.3.2 起任务完成会显示醒目的绿色/黄色横幅。如果仍看不到，请刷新页面后重试。
+
 ## 📝 更新日志
 
-### v1.3.1 (当前版本)
+### v1.3.2 (当前版本)
+
+- ✅ **AI 预规划** — 执行前自动截图并生成 3-8 步执行计划，CLI/桌面悬浮窗/Web UI 三端同步展示
+- ✅ **桌面悬浮窗** — Win32 GDI 实时显示迭代进度、当前动作、Token 用量、计划步骤和最近日志
+- ✅ **结构化日志系统** — JSON 格式日志，环形缓冲区（2000 条），自增 ID 支持 Web 端增量拉取
+- ✅ **SSE 流式优化** — 游标式缓冲区管理，消除 O(n²) 字符串位移，大幅降低 CPU 占用
+- ✅ **前端轮询合并** — Web UI 三个轮询函数合并为单一 `refreshStatus()`，减少 HTTP 请求数
+- ✅ **系统路径保护** — 代码级拦截对 `C:\`、`C:\Windows`、`C:\Program Files` 等系统路径的写入操作
+- ✅ **FileList 重复检测** — 同一目录调用超过 2 次自动拒绝，防止 AI 循环浪费 Token
+- ✅ **Web UI 完成横幅** — 任务完成/停止时显示醒目结果横幅（绿色成功/黄色中断）
+- ✅ **工具选择策略** — GUI 模拟仅用于界面交互场景，文件操作优先使用 FileWrite/Execute
+- ✅ **任务结果追踪** — `/api/task/status` 新增 `result` 字段，精确区分成功/停止/达上限
+- ✅ **日志增量修复** — 从计数对比改为 ID 过滤，解决日志超过 20 条后停止更新的问题
+- ✅ 编译添加 `-lshell32 -ladvapi32 -lpthread -luuid` 依赖
+
+### v1.3.1
 
 - ✅ 修复视觉模型转述超时问题（增加超时时间至 120 秒）
 - ✅ 添加截图压缩功能，减小视觉模型请求体大小
