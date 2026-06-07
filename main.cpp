@@ -3029,6 +3029,32 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);
 
+    // Load app icon from PNG (next to exe)
+    {
+        // Ensure GDI+ is up
+        static ULONG_PTR gdiToken = 0;
+        static bool gdiInit = false;
+        if (!gdiInit) {
+            Gdiplus::GdiplusStartupInput inp;
+            Gdiplus::GdiplusStartup(&gdiToken, &inp, nullptr);
+            gdiInit = true;
+        }
+        wchar_t iconPath[MAX_PATH];
+        GetModuleFileNameW(nullptr, iconPath, MAX_PATH);
+        wchar_t* s = wcsrchr(iconPath, L'\\');
+        if (s) *(s + 1) = 0;
+        wcscat(iconPath, L"app_icon.png");
+        Gdiplus::Bitmap bmp(iconPath);
+        HICON hIcon = nullptr;
+        if (bmp.GetLastStatus() == Gdiplus::Ok) {
+            bmp.GetHICON(&hIcon);
+        }
+        if (hIcon) {
+            SendMessageW(g_hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+            SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+        }
+    }
+
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     std::atomic_flag initFlag = ATOMIC_FLAG_INIT;
