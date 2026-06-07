@@ -2689,6 +2689,7 @@ public:
         g_controller = controller; controller->AddRef();
         g_controller->get_CoreWebView2(&g_webview); g_webview->AddRef();
 
+
         EventRegistrationToken t;
         g_webview->add_NavigationCompleted(new NavCompletedHandler(), &t);
 
@@ -2802,10 +2803,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     execJsRaw(L"if(window.addImageBlock){window.addImageBlock('" + name + L"','" + b64 + L"')}");
                 }
             } else if (delta.find(L"__TOOL_CALLING__") == 0) {
-                std::wstring toolName = escapeJs(delta.substr(17));
+                std::wstring toolName = escapeJs(delta.substr(16)); // "__TOOL_CALLING__" = 16 chars
                 execJsRaw(L"if(window.showToolCalling){window.showToolCalling('" + toolName + L"')}");
             } else if (delta.find(L"__TOOL_ARGS__") == 0) {
-                std::wstring argsText = escapeJs(delta.substr(14));
+                std::wstring argsText = escapeJs(delta.substr(13)); // "__TOOL_ARGS__" = 13 chars
                 execJsRaw(L"if(window.appendToolArgs){window.appendToolArgs('" + argsText + L"')}");
             } else if (delta.find(L"__TOOL__") == 0) {
                 std::wstring body = delta.substr(8);
@@ -3023,7 +3024,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     int cornerPref = 2;
     DwmSetWindowAttribute(g_hwnd, 33, &cornerPref, sizeof(cornerPref));
-    MARGINS margins = { 0, 0, 0, 0 };
+    MARGINS margins = { 0, 0, 1, 0 };
     DwmExtendFrameIntoClientArea(g_hwnd, &margins);
 
     ShowWindow(g_hwnd, nCmdShow);
