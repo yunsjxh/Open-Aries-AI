@@ -1,0 +1,29 @@
+# Build outputs
+*.exe
+*.o
+*.obj
+
+# Config with API keys
+config.txt
+mcp_servers.json
+permissions.txt
+
+# User data
+sessions/
+
+# Debug logs
+*.log
+
+# Third-party / unrelated
+opencode/
+Aries-AI-main/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
