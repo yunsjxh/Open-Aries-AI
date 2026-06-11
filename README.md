@@ -39,8 +39,8 @@ Open Aries AI Desktop 是一款为 Windows 设计的原生桌面 AI 助手。不
 
 ### 核心亮点
 
-| 维度 | 传统方案 | **Open Aries AI Desktop** |
-|------|---------|---------------------------|
+| 维度 | 旧版 Open Aries AI | **Open Aries AI Desktop** |
+|------|-------------------|---------------------------|
 | 运行方式 | 命令行 / 浏览器 localhost | 双击 exe，原生窗口 |
 | 文件体积 | 多文件 + 外部依赖 | **单文件 ~5MB** |
 | 工具调用 | 文本解析（固定格式）| OpenAI 原生 Function Calling |
@@ -123,7 +123,9 @@ model=Pro/moonshotai/Kimi-K2.6
 
 ## 截图
 
-> 截图将在后续版本中补充。欢迎提交 PR 添加！
+![主界面](screenshots/main.png)
+
+*暗色主题主界面，左侧会话列表，右侧聊天区域，底部 Agent 模式开关。*
 
 ---
 
