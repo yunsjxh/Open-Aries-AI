@@ -123,7 +123,7 @@ model=Pro/moonshotai/Kimi-K2.6
 
 ## 截图
 
-![主界面](screenshots/main.png)
+![主界面](https://open-aries-ai.xn--9kq396ceqaq4si9m.cn/main.png)
 
 *暗色主题主界面，左侧会话列表，右侧聊天区域，底部 Agent 模式开关。*
 
