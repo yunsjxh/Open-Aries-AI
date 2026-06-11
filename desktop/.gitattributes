@@ -1,0 +1,9 @@
+# WebView2 SDK — 微软官方头文件，不算项目代码
+include/WebView2.h           linguist-vendored
+include/WebView2EnvironmentOptions.h  linguist-vendored
+
+# GitHub 语言检测修正
+include/WebView2.h           linguist-language=C++
+*.cpp                        linguist-language=C++
+*.hpp                        linguist-language=C++
+*.h                          linguist-language=C++
