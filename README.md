@@ -1,3 +1,8 @@
+> 🚀 **新版已发布** — [Open Aries AI Desktop](https://github.com/yunsjxh/Open-Aries-AI-Desktop)（C++17 + WebView2，单文件 ~5MB，零依赖）
+> 本仓库为旧版 CLI + Web 代码，新版代码已合并到本仓库 `desktop/` 目录，也可直接访问独立仓库。
+
+---
+
 # Open-Aries-AI - Windows 智能自动化助手
 
 [![API Support](https://img.shields.io/badge/API-OpenAI%20Compatible-green)](https://openai.com/blog/openai-api)
