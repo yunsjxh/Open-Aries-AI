@@ -9,6 +9,7 @@
 #include <tlhelp32.h>
 #include <atomic>
 #include <functional>
+#include <set>
 #include <vector>
 #include <cstdio>
 #include <string>
@@ -68,6 +69,72 @@ ICoreWebView2Controller* g_controller = nullptr;
 ICoreWebView2*           g_webview    = nullptr;
 HWND                 g_hwnd       = nullptr;
 
+// System tray notification
+static NOTIFYICONDATAW g_nid = {};
+static bool            g_trayInited = false;
+static constexpr UINT  WM_TRAYMSG = WM_APP + 10;
+
+static void InitTrayIcon(HINSTANCE hInst) {
+    if (g_trayInited || !g_hwnd) return;
+    ZeroMemory(&g_nid, sizeof(g_nid));
+    g_nid.cbSize = sizeof(g_nid);
+    g_nid.hWnd   = g_hwnd;
+    g_nid.uID    = 1;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_TRAYMSG;
+    // Load our own icon from app_icon.ico (32x32 for tray)
+    wchar_t icoPath[MAX_PATH];
+    GetModuleFileNameW(nullptr, icoPath, MAX_PATH);
+    wchar_t* slash = wcsrchr(icoPath, L'\\');
+    if (slash) *(slash + 1) = 0;
+    wcscat(icoPath, L"app_icon.ico");
+    g_nid.hIcon = (HICON)LoadImageW(nullptr, icoPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+    if (!g_nid.hIcon) {
+        g_nid.hIcon = (HICON)SendMessageW(g_hwnd, WM_GETICON, ICON_SMALL, 0);
+    }
+    wcscpy_s(g_nid.szTip, L"Open Aries AI");
+    BOOL ok = Shell_NotifyIconW(NIM_ADD, &g_nid);
+    g_nid.uVersion = 4;
+    Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+    g_trayInited = true;
+    LOG("Tray icon init: add=%d hIcon=%p", (int)ok, (void*)g_nid.hIcon);
+}
+
+static void RemoveTrayIcon() {
+    if (g_trayInited) {
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        g_trayInited = false;
+    }
+}
+
+static void ShowTrayNotification(const wchar_t* title, const wchar_t* text) {
+    if (!g_hwnd) return;
+    // Only notify when focus is not on our window or any of its children
+    HWND hwndFocus = GetFocus();
+    if (hwndFocus && (hwndFocus == g_hwnd || IsChild(g_hwnd, hwndFocus))) return;
+    if (!g_trayInited) {
+        if (g_hwnd) {
+            HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrW(g_hwnd, GWLP_HINSTANCE);
+            InitTrayIcon(hInst);
+        }
+    }
+    if (!g_trayInited) return;
+    NOTIFYICONDATAW nid = g_nid;
+    nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
+    nid.uFlags = NIF_INFO;
+    wcscpy_s(nid.szInfoTitle, title ? title : L"Open Aries AI");
+    wcscpy_s(nid.szInfo, text ? text : L"");
+    nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+static void ActivateWindow() {
+    if (!g_hwnd) return;
+    if (IsIconic(g_hwnd)) ShowWindow(g_hwnd, SW_RESTORE);
+    SetForegroundWindow(g_hwnd);
+    SetActiveWindow(g_hwnd);
+}
+
 // Forward
 LRESULT CALLBACK ChildSubclassProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 struct ToolCall;
@@ -98,15 +165,15 @@ bool                  g_permApproved = false;
 bool                  g_permRemember = false;
 std::condition_variable g_permCv;
 
-// Agent mode
-bool g_agentMode = false;
+// Agent mode (per-session — see g_sessionState)
 bool g_agentRunning = false;
 const int AGENT_MAX_ROUNDS = 10;
 std::wstring g_agentPrompt;
 
 // Session-based conversation history
 std::map<std::wstring, std::vector<ChatMessage>> g_sessions;
-std::wstring g_activeSession = L"default";
+std::map<std::wstring, std::wstring> g_sessionTitles;
+std::wstring g_activeSession = L"";
 std::mutex   g_historyMutex;
 
 // Pending file attachments
@@ -114,18 +181,35 @@ struct PendingFile {
     std::string name;
     std::string content;
 };
-std::vector<PendingFile> g_pendingFiles;
-std::mutex               g_fileMutex;
+
+// === Per-session state (OpenCode-style isolation) ===
+// Each session gets its own agentMode, pendingFiles, pendingScreenshot, and
+// allowedPaths set. Permission *rules* live in g_permission under a ruleset
+// named "session:<id>". Switching sessions swaps the active state.
+struct SessionState {
+    bool                          agentMode = true;       // replaces old g_agentMode
+    std::vector<PendingFile>      pendingFiles;           // replaces old g_pendingFiles
+    std::string                   pendingScreenshotB64;   // replaces old g_pendingScreenshotB64
+    std::set<std::string>         allowedPaths;           // paths approved via native MessageBox this session
+};
+std::map<std::wstring, SessionState> g_sessionState;     // key = sessionId (wide)
+std::mutex                           g_sessionStateMutex;
+
+std::mutex               g_fileMutex;       // (kept for any future cross-session file ops)
+std::mutex               g_screenshotMutex; // (kept for any future cross-session screenshot ops)
 
 // Streaming queue
 std::queue<std::wstring> g_streamQueue;
 std::mutex               g_streamMutex;
 bool                     g_streamDone = false;
 std::wstring             g_streamFull;
-
-// Pending screenshot for multimodal agent requests
-std::string g_pendingScreenshotB64;
-std::mutex  g_screenshotMutex;
+// Which session's worker currently owns the stream. Set by the worker thread
+// at start of round and cleared when the loop exits. WM_AI_DELTA drops deltas
+// (and ignores done/loading) when this != g_activeSession, so switching to
+// another session mid-stream stops the old session's content from leaking
+// into the new session's UI. Delays are preserved (queue not drained) — the
+// user sees the buffered deltas when they switch back.
+std::wstring             g_streamOwnerSession;
 
 // PowerShell confirmation
 std::mutex              g_psMutex;
@@ -262,6 +346,28 @@ static std::wstring getSessionsDir() {
     return exePath;
 }
 
+static std::wstring getLastActivePath() {
+    return getSessionsDir() + L"last_session.txt";
+}
+
+static std::wstring readLastActiveSession() {
+    std::ifstream in(ws_to_utf8(getLastActivePath()));
+    if (!in) return L"";
+    std::string line;
+    std::getline(in, line);
+    std::wstring wid = utf8_to_ws(line);
+    // strip trailing CR / whitespace
+    while (!wid.empty() && (wid.back() == L'\r' || wid.back() == L'\n' || wid.back() == L' '))
+        wid.pop_back();
+    return wid;
+}
+
+static void writeLastActiveSession(const std::wstring& id) {
+    CreateDirectoryW(getSessionsDir().c_str(), nullptr);
+    std::ofstream out(ws_to_utf8(getLastActivePath()), std::ios::trunc);
+    if (out) out << ws_to_utf8(id);
+}
+
 static std::string escJson(const std::string& s) {
     std::string o;
     for (size_t i = 0; i < s.size(); i++) {
@@ -293,7 +399,12 @@ static void saveSession(const std::wstring& sessionId) {
         auto it = g_sessions.find(sessionId);
         if (it == g_sessions.end()) return;
         std::ostringstream js;
-        js << "{\"id\":\"" << escJson(ws_to_utf8(sessionId)) << "\",\"messages\":[";
+        js << "{\"id\":\"" << escJson(ws_to_utf8(sessionId)) << "\"";
+        auto tit = g_sessionTitles.find(sessionId);
+        if (tit != g_sessionTitles.end() && !tit->second.empty()) {
+            js << ",\"title\":\"" << escJson(ws_to_utf8(tit->second)) << "\"";
+        }
+        js << ",\"messages\":[";
         bool first = true;
         for (auto& m : it->second) {
             if (!first) js << ",";
@@ -311,6 +422,39 @@ static void saveSession(const std::wstring& sessionId) {
         WriteFile(h, jsonStr.data(), (DWORD)jsonStr.size(), &written, nullptr);
         CloseHandle(h);
     }
+}
+
+// === Per-session permission persistence ===
+// Save only the "session:<id>" ruleset to its own file under sessions\<id>.perm.txt.
+// Implementation note: we don't want to dump the entire g_permission (which
+// holds defaults + every other session's rules + legacy) into a per-session
+// file. We construct a throwaway PermissionSystem, copy just the one ruleset
+// in, and call saveToFile.
+static std::wstring sessionPermPath(const std::wstring& id) {
+    return getSessionsDir() + id + L".perm.txt";
+}
+static void saveSessionPermissions(const std::wstring& id) {
+    std::string rsName = "session:" + ws_to_utf8(id);
+    auto* rs = g_permission.getRulesetPtr(rsName);
+    if (!rs) return;
+    std::wstring fp = sessionPermPath(id);
+    CreateDirectoryW(getSessionsDir().c_str(), nullptr);
+    PermissionSystem one;
+    one.setRuleset(rsName, rs->rules);
+    one.saveToFile(ws_to_utf8(fp));
+}
+static void loadSessionPermissions(const std::wstring& id) {
+    std::wstring fp = sessionPermPath(id);
+    // Replace any in-memory copy of this session's ruleset with the on-disk
+    // version. (If file missing, removeRuleset clears the stale ruleset.)
+    g_permission.removeRuleset("session:" + ws_to_utf8(id));
+    g_permission.loadFromFile(ws_to_utf8(fp));
+}
+
+// Get a const reference to the active session's state. Locking is the
+// caller's responsibility if the reference will be mutated.
+static const SessionState& getSessionState(const std::wstring& id) {
+    return g_sessionState.at(id);
 }
 
 static std::string unescJson(const std::string& s) {
@@ -378,6 +522,30 @@ static void loadHistoryAndPush() {
         count++;
         if (firstId.empty()) firstId = sid;
 
+        // Parse title (optional) from the JSON
+        size_t ttPos = content.find("\"title\"");
+        if (ttPos != std::string::npos && ttPos < content.find("\"messages\"")) {
+            size_t t1 = content.find('"', ttPos + 7);
+            if (t1 != std::string::npos) {
+                size_t t2 = t1 + 1;
+                while (t2 < content.size()) {
+                    if (content[t2] == '"') {
+                        int bs = 0;
+                        for (size_t k = t2; k > t1 && content[k - 1] == '\\'; k--) bs++;
+                        if (bs % 2 == 0) break;
+                    }
+                    t2++;
+                }
+                if (t2 < content.size() && t2 > t1 + 1) {
+                    std::wstring title = utf8_to_ws(unescJson(content.substr(t1 + 1, t2 - t1 - 1)));
+                    if (!title.empty()) {
+                        std::lock_guard<std::mutex> lk(g_historyMutex);
+                        g_sessionTitles[sid] = title;
+                    }
+                }
+            }
+        }
+
         // Parse messages into g_sessions
         size_t mp = content.find("\"messages\"");
         if (mp != std::string::npos) {
@@ -429,7 +597,28 @@ static void loadHistoryAndPush() {
     FindClose(hFind);
 
     jsArray << "]";
-    if (count == 0) return;
+    if (count == 0) {
+        // No sessions on disk — make sure stale last-active is cleared
+        writeLastActiveSession(L"");
+        return;
+    }
+
+    // Determine which session to restore: persisted last-active, else first found
+    std::wstring lastActive = readLastActiveSession();
+    if (!lastActive.empty()) {
+        std::wstring probe = lastActive + L".json";
+        std::wstring fp = getSessionsDir() + probe;
+        if (GetFileAttributesW(fp.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            lastActive = L"";  // file no longer exists
+        }
+    }
+    if (lastActive.empty()) {
+        lastActive = firstId;
+        writeLastActiveSession(firstId);
+    } else {
+        std::lock_guard<std::mutex> lk(g_historyMutex);
+        g_activeSession = lastActive;
+    }
 
     std::wstring wjson = utf8_to_ws(jsArray.str());
     std::wstring escaped;
@@ -443,7 +632,7 @@ static void loadHistoryAndPush() {
         }
     }
     std::wstring activeEsc;
-    for (wchar_t c : firstId) {
+    for (wchar_t c : lastActive) {
         switch (c) {
             case L'\\': activeEsc += L"\\\\"; break;
             case L'\'': activeEsc += L"\\'";  break;
@@ -473,6 +662,7 @@ struct ToolCall {
     std::string name;
     std::string content;
     std::string source;  // for COPY_FILE / MOVE_FILE
+    std::string args;    // raw JSON arguments (for UI display)
 };
 
 class WebMsgHandler : public ICoreWebView2WebMessageReceivedEventHandler {
@@ -568,14 +758,119 @@ public:
                     handleSwitchSession(wmsg.substr(q1 + 1, q2 - q1 - 1));
                 }
             }
+        } else if (wcsstr(msg, L"\"deleteSession\"")) {
+            std::wstring wmsg(msg);
+            size_t idPos = wmsg.find(L"\"sessionId\"");
+            if (idPos != std::wstring::npos) {
+                size_t q1 = wmsg.find(L'"', idPos + 11);
+                size_t q2 = q1 + 1 < wmsg.size() ? wmsg.find(L'"', q1 + 1) : std::wstring::npos;
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1 + 1) {
+                    std::wstring sid = wmsg.substr(q1 + 1, q2 - q1 - 1);
+                    if (sid != L"default") {
+                        {
+                            std::lock_guard<std::mutex> lk(g_historyMutex);
+                            g_sessions.erase(sid);
+                            g_sessionTitles.erase(sid);
+                            if (g_activeSession == sid) g_activeSession = L"";
+                        }
+                        // Per-session cleanup: ruleset + persisted file + in-memory state
+                        g_permission.removeRuleset("session:" + ws_to_utf8(sid));
+                        {
+                            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                            g_sessionState.erase(sid);
+                        }
+                        std::wstring fp = getSessionsDir() + sid + L".json";
+                        if (DeleteFileW(fp.c_str())) {
+                            LOG("Session file deleted: %ls", fp.c_str());
+                        } else {
+                            LOG("Session file delete failed (err=%lu): %ls", GetLastError(), fp.c_str());
+                        }
+                        std::wstring pfp = getSessionsDir() + sid + L".perm.txt";
+                        if (DeleteFileW(pfp.c_str())) {
+                            LOG("Session perm file deleted: %ls", pfp.c_str());
+                        } else {
+                            DWORD e = GetLastError();
+                            if (e != ERROR_FILE_NOT_FOUND)
+                                LOG("Session perm file delete failed (err=%lu): %ls", e, pfp.c_str());
+                        }
+                    }
+                    LOG("Session deleted: %ls", sid.c_str());
+                }
+            }
+        } else if (wcsstr(msg, L"\"renameSession\"")) {
+            std::wstring wmsg(msg);
+            size_t idPos = wmsg.find(L"\"sessionId\"");
+            size_t ttPos = wmsg.find(L"\"title\"");
+            if (idPos != std::wstring::npos && ttPos != std::wstring::npos) {
+                size_t q1 = wmsg.find(L'"', idPos + 11);
+                size_t q2 = q1 + 1 < wmsg.size() ? wmsg.find(L'"', q1 + 1) : std::wstring::npos;
+                size_t t1 = wmsg.find(L'"', ttPos + 7);
+                // Skip potential escaped quotes in title
+                size_t t2 = std::wstring::npos;
+                if (t1 != std::wstring::npos) {
+                    t2 = t1 + 1;
+                    while (t2 < wmsg.size()) {
+                        if (wmsg[t2] == L'"') {
+                            size_t bs = 0;
+                            for (size_t k = t2; k > t1 && wmsg[k - 1] == L'\\'; k--) bs++;
+                            if (bs % 2 == 0) break;
+                        }
+                        t2++;
+                    }
+                }
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1 + 1
+                    && t1 != std::wstring::npos && t2 != std::wstring::npos && t2 > t1 + 1) {
+                    std::wstring sid = wmsg.substr(q1 + 1, q2 - q1 - 1);
+                    std::wstring title;
+                    {
+                        std::wstring raw = wmsg.substr(t1 + 1, t2 - t1 - 1);
+                        std::string u8 = ws_to_utf8(raw);
+                        std::string out;
+                        for (size_t i = 0; i < u8.size(); i++) {
+                            if (u8[i] == '\\' && i + 1 < u8.size()) {
+                                switch (u8[i + 1]) {
+                                    case '\\': out += '\\'; i++; break;
+                                    case '"':  out += '"';  i++; break;
+                                    case 'n':  out += '\n'; i++; break;
+                                    case 'r':  out += '\r'; i++; break;
+                                    case 't':  out += '\t'; i++; break;
+                                    default:   out += u8[i + 1]; i++; break;
+                                }
+                            } else {
+                                out += u8[i];
+                            }
+                        }
+                        title = utf8_to_ws(out);
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(g_historyMutex);
+                        g_sessionTitles[sid] = title;
+                    }
+                    saveSession(sid);
+                    LOG("Session renamed: %ls -> %ls", sid.c_str(), title.c_str());
+                }
+            }
         } else if (wcsstr(msg, L"\"attachFile\"")) {
             handleAttachFile();
         } else if (wcsstr(msg, L"\"toggleAgent\"")) {
-            g_agentMode = !g_agentMode;
-            std::wstring js = L"if(window.setAgentMode){window.setAgentMode(" +
-                              std::wstring(g_agentMode ? L"true" : L"false") + L")}";
-            execJsRaw(js);
-            LOG("Agent mode: %d", g_agentMode);
+            std::wstring sid;
+            {
+                std::lock_guard<std::mutex> lk(g_historyMutex);
+                sid = g_activeSession;
+            }
+            if (!sid.empty()) {
+                bool newMode = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                    auto& st = g_sessionState[sid]; // lazy create
+                    st.agentMode = !st.agentMode;
+                    newMode = st.agentMode;
+                }
+                std::wstring js = L"if(window.setAgentMode){window.setAgentMode(" +
+                                  std::wstring(newMode ? L"true" : L"false") + L")}";
+                execJsRaw(js);
+                LOG("Agent mode: %d (session %ls)", newMode, sid.c_str());
+            }
         } else if (wcsstr(msg, L"\"newSession\"")) {
             std::wstring newId = L"s_" + std::to_wstring(GetTickCount64());
             handleSwitchSession(newId);
@@ -805,15 +1100,18 @@ public:
         g_abortFlag.store(false);
         std::string text = ws_to_utf8(userMsg);
 
-        // Append pending file contents
+        // Append pending file contents (per-session)
+        std::wstring sid = g_activeSession;
+        std::vector<PendingFile> localPending;
         {
-            std::lock_guard<std::mutex> lk(g_fileMutex);
-            if (!g_pendingFiles.empty()) {
-                text += "\n\n以下为用户附加的文件内容：";
-                for (auto& f : g_pendingFiles) {
-                    text += "\n\n=== " + f.name + " ===\n" + f.content;
-                }
-                g_pendingFiles.clear();
+            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+            auto& st = g_sessionState[sid]; // lazy create
+            localPending.swap(st.pendingFiles);
+        }
+        if (!localPending.empty()) {
+            text += "\n\n以下为用户附加的文件内容：";
+            for (auto& f : localPending) {
+                text += "\n\n=== " + f.name + " ===\n" + f.content;
             }
         }
 
@@ -830,14 +1128,19 @@ public:
             while (!g_streamQueue.empty()) g_streamQueue.pop();
             g_streamFull.clear();
             g_streamDone = false;
+            g_streamOwnerSession = g_activeSession; // claim stream for the session that's about to run
         }
 
         // Show loading skeleton
         execJs(L"window.setLoading(true)");
 
-        // Capture state for thread
+        // Capture state for thread (per-session agent mode)
         std::wstring sessionId = g_activeSession;
-        bool agentMode = g_agentMode;
+        bool agentMode = true;
+        {
+            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+            agentMode = g_sessionState[sessionId].agentMode; // lazy create
+        }
 
         // Async AI call with agent loop
         if (agentMode) g_agentRunning = true;
@@ -857,7 +1160,17 @@ public:
                 systemPrompt = ws_to_utf8(g_agentPrompt);
                 toolsJson = getToolsJson();
             } else {
-                systemPrompt = "你是一个乐于助人的AI助手。请用中文简洁地回答用户的问题。";
+                systemPrompt =
+                    "你是一个乐于助人的AI助手。请用中文简洁地回答用户的问题。\n\n"
+                    "输出格式规范（必须遵守）：\n"
+                    "- 使用 GitHub-flavored Markdown。\n"
+                    "- 禁止使用嵌套列表，保持列表扁平（单层级）。如需层级，拆分为独立列表或段落。\n"
+                    "- 有序列表仅使用 `1. 2. 3.` 格式（带句点），禁止使用 `1)`。\n"
+                    "- 标题可选，仅在必要时使用。如使用，用简短标题（1-3 词）包裹在 **…** 中，标题后不要空行。不要用 `#` 标题语法。\n"
+                    "- 行内代码块用于命令、路径、环境变量、函数名、关键字。\n"
+                    "- 多行代码片段用围栏代码块包裹，尽可能带上语言标签。\n"
+                    "- 表格必须使用标准 Markdown 表格格式：每行单独一行，以 `|` 开头和结尾；表头下方必须紧跟 `|---|---|` 分隔行；行与行之间用换行符分隔，禁止用空格或 `||` 连接多行表格。\n"
+                    "- 除非用户明确要求，否则禁止使用 emoji 或全角破折号。";
             }
 
             // Helper: build multimodal JSON body when screenshot is pending
@@ -951,9 +1264,15 @@ public:
                                 g_streamQueue.push(utf8_to_ws(delta));
                             }
                         } else {
-                            std::lock_guard<std::mutex> lk(g_streamMutex);
-                            g_streamQueue.push(utf8_to_ws(delta));
-                            g_streamFull += utf8_to_ws(delta);
+                            // Non-agent: skip thinking (\x01) deltas, only accumulate content
+                            if (!delta.empty() && delta[0] == '\x01') {
+                                std::lock_guard<std::mutex> lk(g_streamMutex);
+                                g_streamQueue.push(utf8_to_ws(delta));
+                            } else {
+                                std::lock_guard<std::mutex> lk(g_streamMutex);
+                                g_streamQueue.push(utf8_to_ws(delta));
+                                g_streamFull += utf8_to_ws(delta);
+                            }
                         }
                     }
                     if (done) {
@@ -963,19 +1282,19 @@ public:
                     PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
                 };
 
-                // Check for pending screenshot → multimodal path
+                // Check for pending screenshot → multimodal path (per-session)
                 std::string screenshotB64;
                 {
-                    std::lock_guard<std::mutex> lk(g_screenshotMutex);
-                    screenshotB64 = g_pendingScreenshotB64;
+                    std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                    screenshotB64 = g_sessionState[sessionId].pendingScreenshotB64;
                 }
 
                 std::pair<bool, std::string> result;
                 std::vector<ToolCallInfo> nativeToolCalls;
                 if (!screenshotB64.empty()) {
                     {
-                        std::lock_guard<std::mutex> lk(g_screenshotMutex);
-                        g_pendingScreenshotB64.clear();
+                        std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                        g_sessionState[sessionId].pendingScreenshotB64.clear();
                     }
                     std::string jsonBody = buildMultimodalJson(msgs, screenshotB64, systemPrompt);
                     LOG("Agent round %d: multimodal mode (image %zu chars, non-streaming)",
@@ -984,18 +1303,27 @@ public:
                     result = g_provider->sendRawRequest(jsonBody);
                     if (result.first && !result.second.empty()) {
                         std::string full = result.second;
-                        const char* thinkTag = "<思考过程>\n";
-                        const char* thinkEndTag = "\n</思考过程>\n\n";
-                        size_t ts = full.find(thinkTag);
-                        if (ts != std::string::npos) {
-                            size_t tcStart = ts + strlen(thinkTag);
-                            size_t te = full.find(thinkEndTag, tcStart);
-                            if (te != std::string::npos) {
-                                accumulatedThinking = full.substr(tcStart, te - tcStart);
-                                accumulatedContent = full.substr(te + strlen(thinkEndTag));
-                            } else {
-                                accumulatedContent = full;
+                        // Try multiple thinking-tag formats: <思考过程>...</思考过程>, <think>...</think>
+                        static const char* thinkTags[] = {
+                            "<思考过程>\n", "\n</思考过程>\n\n",
+                            "<think>\n",     "\n</think>\n\n",
+                            "<think>",       "</think>"
+                        };
+                        size_t ts = std::string::npos, te = std::string::npos;
+                        int matchedPair = -1;
+                        for (int i = 0; i < 2; i++) {
+                            size_t s = full.find(thinkTags[i*2]);
+                            if (s != std::string::npos) {
+                                size_t e = full.find(thinkTags[i*2 + 1], s + strlen(thinkTags[i*2]));
+                                if (e != std::string::npos) {
+                                    ts = s; te = e; matchedPair = i; break;
+                                }
                             }
+                        }
+                        if (matchedPair >= 0) {
+                            size_t tcStart = ts + strlen(thinkTags[matchedPair*2]);
+                            accumulatedThinking = full.substr(tcStart, te - tcStart);
+                            accumulatedContent = full.substr(te + strlen(thinkTags[matchedPair*2 + 1]));
                         } else {
                             accumulatedContent = full;
                         }
@@ -1010,7 +1338,7 @@ public:
                         PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
                     }
                 } else {
-                    if (agentMode && !toolsJson.empty()) {
+                    if (!toolsJson.empty()) {
                         result = g_provider->sendMessageStreamWithTools(msgs, streamCb, systemPrompt, toolsJson, nativeToolCalls);
                     } else {
                         result = g_provider->sendMessageStream(msgs, streamCb, systemPrompt);
@@ -1027,23 +1355,35 @@ public:
                     break;
                 }
 
+                // User may have pressed Stop while the HTTP stream was in flight.
+                // Respect it before we spend more time parsing / calling tools.
+                if (g_abortFlag.load()) {
+                    LOG("Agent round %d: aborted after stream", round + 1);
+                    {
+                        std::lock_guard<std::mutex> lk(g_streamMutex);
+                        g_streamQueue.push(utf8_to_ws("\n\n[已停止]"));
+                        g_streamDone = true;
+                        PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
+                    }
+                    break;
+                }
+
                 // Wait for stream to complete
                 Sleep(200);
 
                 if (!agentMode) {
-                    // Non-agent: content already streamed, save to history (strip markers)
+                    // Non-agent: content already streamed, save to history (exclude thinking)
+                    // Thinking deltas are marked with \x01 prefix; only content goes to g_streamFull.
+                    // (See g_streamFull accumulation in streamCb — it already skips \x01 deltas)
                     std::string full;
                     {
                         std::lock_guard<std::mutex> lk(g_streamMutex);
                         full = ws_to_utf8(g_streamFull);
                     }
-                    // Strip \x01 markers
-                    std::string clean;
-                    for (char c : full) if (c != '\x01') clean += c;
-                    if (!clean.empty()) {
+                    if (!full.empty()) {
                         {
                             std::lock_guard<std::mutex> lk(g_historyMutex);
-                            g_sessions[sessionId].emplace_back("assistant", clean);
+                            g_sessions[sessionId].emplace_back("assistant", full);
                         }
                         saveSession(sessionId);
                     }
@@ -1051,9 +1391,9 @@ public:
                 }
 
                 // Agent mode: process accumulated response
-                LOG("Agent round %d response: thinking=%zu chars, content=%zu chars",
-                    round + 1, accumulatedThinking.length(), accumulatedContent.length());
-                if (accumulatedThinking.empty() && accumulatedContent.empty()) {
+                LOG("Agent round %d response: thinking=%zu chars, content=%zu chars, tool_calls=%zu",
+                    round + 1, accumulatedThinking.length(), accumulatedContent.length(), nativeToolCalls.size());
+                if (accumulatedThinking.empty() && accumulatedContent.empty() && nativeToolCalls.empty()) {
                     LOG("Agent round %d: empty response, breaking", round + 1);
                     // Push fallback message to UI
                     {
@@ -1102,6 +1442,19 @@ public:
                 LOG("Agent round %d: TOOL=%s path=%s name=%s source=%s content_len=%zu",
                     round + 1, tc.tool.c_str(), tc.path.c_str(), tc.name.c_str(), tc.source.c_str(), tc.content.length());
 
+                // Honor abort before invoking the tool (executeTool also checks,
+                // but this avoids a needless tool-block UI push for a "stopped" run).
+                if (g_abortFlag.load()) {
+                    LOG("Agent round %d: aborted before TOOL=%s", round + 1, tc.tool.c_str());
+                    {
+                        std::lock_guard<std::mutex> lk(g_streamMutex);
+                        g_streamQueue.push(utf8_to_ws("\n\n[已停止]"));
+                        g_streamDone = true;
+                        PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
+                    }
+                    break;
+                }
+
                 // Execute tool and push result via addToolBlock
                 std::string toolResult = executeTool(tc);
                 LOG("Agent round %d: TOOL RESULT (%s) → %zu chars",
@@ -1113,11 +1466,18 @@ public:
                     std::lock_guard<std::mutex> lk(g_streamMutex);
                     g_streamDone = false;
                     g_streamFull.clear();
-                    // Use __TOOL__ prefix: name\x1fresult
-                    std::string toolDesc = tc.tool;
-                    if (!tc.name.empty()) toolDesc += " → " + tc.name;
-                    else if (!tc.path.empty()) toolDesc += " → " + tc.path;
-                    std::wstring toolLabel = L"__TOOL__" + utf8_to_ws(toolDesc) + L"\x1f" + utf8_to_ws(toolResult);
+                    // Use __TOOL__ prefix: name\x1fargs\x1fresult
+                    // name must match exactly the tool name used by __TOOL_CALLING__ so JS
+                    // can find and update the pending tool part instead of creating a duplicate.
+                    // The descriptive " → name/path" info is now carried in the args segment.
+                    std::string argsForUi = tc.args;
+                    if (argsForUi.empty()) {
+                        if (!tc.name.empty()) argsForUi = "{\"name\":\"" + tc.name + "\"}";
+                        else if (!tc.path.empty()) argsForUi = "{\"path\":\"" + tc.path + "\"}";
+                    }
+                    std::wstring toolLabel = L"__TOOL__" + utf8_to_ws(tc.tool) + L"\x1f" +
+                                             utf8_to_ws(argsForUi) + L"\x1f" +
+                                             utf8_to_ws(toolResult);
                     g_streamQueue.push(toolLabel);
                     g_streamDone = true;
                     PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
@@ -1137,16 +1497,66 @@ public:
 
             g_agentRunning = false;
             g_aiBusy = false;
+            // Release stream ownership so the WM_AI_DELTA handler can correctly
+            // process the done marker on whatever session the user is on.
+            {
+                std::lock_guard<std::mutex> lk(g_streamMutex);
+                g_streamOwnerSession.clear();
+            }
             LOG("Agent loop finished | session=%ls", sessionId.c_str());
             PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
         }).detach();
     }
 
     void handleSwitchSession(const std::wstring& sessionId) {
-        std::lock_guard<std::mutex> lk(g_historyMutex);
-        g_activeSession = sessionId;
-        if (g_sessions.find(sessionId) == g_sessions.end()) {
-            g_sessions[sessionId] = {};
+        {
+            std::lock_guard<std::mutex> lk(g_historyMutex);
+            g_activeSession = sessionId;
+            if (g_sessions.find(sessionId) == g_sessions.end()) {
+                g_sessions[sessionId] = {};
+            }
+        }
+        // Per-session state: lazy-create entry, load this session's ruleset
+        // from disk (replacing any stale in-memory copy), and push UI sync.
+        bool agentModeVal = true;
+        std::vector<std::string> pendingNames;
+        {
+            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+            auto& st = g_sessionState[sessionId]; // lazy create
+            agentModeVal = st.agentMode;
+            for (auto& f : st.pendingFiles) pendingNames.push_back(f.name);
+        }
+        loadSessionPermissions(sessionId);
+        writeLastActiveSession(sessionId);
+        // If a worker is streaming for this exact session, kick the drain so
+        // deltas that queued while the user was away are flushed now.
+        {
+            std::lock_guard<std::mutex> lk(g_streamMutex);
+            if (g_streamOwnerSession == sessionId) {
+                PostMessageW(g_hwnd, WM_AI_DELTA, 0, 0);
+            }
+        }
+        // Push UI sync
+        std::wstring js = L"if(window.setAgentMode){window.setAgentMode(" +
+                          std::wstring(agentModeVal ? L"true" : L"false") + L")}";
+        execJsRaw(js);
+        if (!pendingNames.empty()) {
+            std::wstring namesJs = L"[";
+            for (size_t i = 0; i < pendingNames.size(); i++) {
+                if (i) namesJs += L",";
+                namesJs += L"'";
+                for (char c : pendingNames[i]) {
+                    if (c == '\\') namesJs += L"\\\\";
+                    else if (c == '\'') namesJs += L"\\'";
+                    else namesJs += (wchar_t)(unsigned char)c;
+                }
+                namesJs += L"'";
+            }
+            namesJs += L"]";
+            std::wstring js2 = L"if(window.setPendingFiles){window.setPendingFiles(" + namesJs + L")}";
+            execJsRaw(js2);
+        } else {
+            execJsRaw(L"if(window.setPendingFiles){window.setPendingFiles([])}");
         }
         LOG("Switched to session: %ls", sessionId.c_str());
     }
@@ -1214,10 +1624,15 @@ public:
         std::wstring fileName = lastSlash != std::wstring::npos ? filePath.substr(lastSlash + 1) : filePath;
         std::string name = ws_to_utf8(fileName);
 
-        // Store in C++ pending list
+        // Store in C++ pending list (per-session)
+        std::wstring sid;
         {
-            std::lock_guard<std::mutex> lk(g_fileMutex);
-            g_pendingFiles.push_back({name, content});
+            std::lock_guard<std::mutex> lk(g_historyMutex);
+            sid = g_activeSession;
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+            g_sessionState[sid].pendingFiles.push_back({name, content});
         }
 
         // Notify JS with just name + first line preview
@@ -1303,6 +1718,28 @@ ToolCall parseToolCall(const std::string& text) {
             pos = valEnd + 1;
             if (pos >= body.length()) break;
         }
+        // Build a JSON-ish args string for the UI to pretty-print
+        {
+            std::string a = "{";
+            bool first = true;
+            auto addKv = [&](const char* k, const std::string& v) {
+                if (v.empty()) return;
+                if (!first) a += ",";
+                first = false;
+                a += std::string("\"") + k + "\":\"";
+                for (char c : v) {
+                    if (c == '"' || c == '\\') a += '\\';
+                    a += c;
+                }
+                a += '"';
+            };
+            addKv("path", tc.path);
+            addKv("name", tc.name);
+            addKv("content", tc.content);
+            addKv("source", tc.source);
+            a += "}";
+            tc.args = a;
+        }
         break;
     }
     return tc;
@@ -1313,6 +1750,7 @@ ToolCall parseToolCallArgs(const ToolCallInfo& tci) {
     ToolCall tc;
     tc.tool = tci.name;
     const auto& json = tci.arguments;
+    tc.args = json;
 
     auto extractStr = [&](const std::string& key) -> std::string {
         std::string search = "\"" + key + "\":";
@@ -1361,7 +1799,22 @@ std::string resolveShortcut(const std::wstring& lnkPath) {
     return ws_to_utf8(target);
 }
 
-void scanStartMenu(const std::wstring& dir, std::string& result, int& count) {
+// Forward-declared registry helpers (defined below)
+using RegistryAppCallback = std::function<bool(
+    const std::wstring& displayName,
+    const std::wstring& uninstallString,
+    const std::wstring& installLocation,
+    const std::wstring& displayIcon,
+    const std::wstring& publisher,
+    const std::wstring& displayVersion)>;
+static void enumUninstallApps(RegistryAppCallback cb);
+static std::wstring normalizeExePath(const std::wstring& raw);
+static std::wstring extractExeFromCmd(const std::wstring& cmd);
+static std::wstring guessExeInInstallLocation(const std::wstring& installLocation,
+                                              const std::wstring& displayName);
+
+void scanStartMenu(const std::wstring& dir, std::string& result, int& count,
+                   std::set<std::string>* namesOut = nullptr) {
     if (count >= 500) return;
     std::wstring pattern = dir + L"\\*";
     WIN32_FIND_DATAW fd;
@@ -1372,7 +1825,7 @@ void scanStartMenu(const std::wstring& dir, std::string& result, int& count) {
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
         std::wstring fullPath = dir + L"\\" + fd.cFileName;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            scanStartMenu(fullPath, result, count);
+            scanStartMenu(fullPath, result, count, namesOut);
         } else {
             std::wstring nm(fd.cFileName);
             if (nm.length() < 5) continue;
@@ -1380,9 +1833,15 @@ void scanStartMenu(const std::wstring& dir, std::string& result, int& count) {
             for (auto& c : ext) c = towlower(c);
             if (ext == L".lnk") {
                 std::string target = resolveShortcut(fullPath);
-                result += "  " + ws_to_utf8(nm.substr(0, nm.length() - 4));
+                std::string name = ws_to_utf8(nm.substr(0, nm.length() - 4));
+                result += "  " + name;
                 if (!target.empty()) result += "  →  " + target;
                 result += "\n";
+                if (namesOut) {
+                    std::string lname = name;
+                    for (auto& c : lname) c = (char)tolower((unsigned char)c);
+                    namesOut->insert(lname);
+                }
                 count++;
             }
         }
@@ -1390,6 +1849,11 @@ void scanStartMenu(const std::wstring& dir, std::string& result, int& count) {
     FindClose(hFind);
 }
 
+// Find the executable path (or install location) for an app by name.
+// 1) First searches Start Menu .lnk shortcuts (most apps have these).
+// 2) Falls back to Windows Registry Uninstall entries (apps without a
+//    shortcut, e.g. Steam games, SDKs, services). Uses DisplayIcon →
+//    InstallLocation+conventional names → UninstallString in that order.
 std::wstring findAppByName(const std::string& name) {
     std::string lowerName = name;
     for (auto& c : lowerName) c = (char)tolower((unsigned char)c);
@@ -1442,39 +1906,106 @@ std::wstring findAppByName(const std::string& name) {
             FindClose(hFind);
         }
     }
-    return L"";
+
+    // Fallback: registry Uninstall (apps without a Start Menu shortcut)
+    std::wstring result;
+    bool stop = false;
+    enumUninstallApps([&](const std::wstring& dn, const std::wstring& us,
+                          const std::wstring& il, const std::wstring& di,
+                          const std::wstring&, const std::wstring&) -> bool {
+        if (stop) return false;
+        std::string d = ws_to_utf8(dn);
+        std::string ld = d;
+        for (auto& c : ld) c = (char)tolower((unsigned char)c);
+        if (ld.find(lowerName) == std::string::npos) return false;
+
+        // 1) DisplayIcon (e.g. "C:\path\app.exe,0") — usually the main exe
+        std::wstring exe = normalizeExePath(di);
+        if (!exe.empty() && GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            result = exe;
+            stop = true;
+            return true;
+        }
+        // 2) InstallLocation + conventional exe names
+        exe = guessExeInInstallLocation(il, dn);
+        if (!exe.empty()) {
+            result = exe;
+            stop = true;
+            return true;
+        }
+        // 3) Extract from UninstallString
+        exe = extractExeFromCmd(us);
+        if (!exe.empty() && GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            result = exe;
+            stop = true;
+            return true;
+        }
+        // 4) As a last resort, return InstallLocation (lets OPEN_APP_LOCATION work)
+        if (!il.empty() && GetFileAttributesW(il.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            result = il;
+            stop = true;
+            return true;
+        }
+        return false;
+    });
+    return result;
 }
 
-std::string findUninstallString(const std::string& appName) {
-    std::string lowerName = appName;
-    for (auto& c : lowerName) c = (char)tolower((unsigned char)c);
-    // Query registry uninstall keys
-    const wchar_t* keys[] = {
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-        L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+// =========================================================================
+// Registry uninstall enumeration
+//   Walks HKLM/HKLM32/HKCU Uninstall keys. Skips SystemComponent=1 and
+//   entries with a ParentKeyName (avoids showing upgrade rollups twice).
+//   cb returns true to stop early.
+// =========================================================================
+static void enumUninstallApps(RegistryAppCallback cb) {
+    struct RootKey { HKEY root; const wchar_t* sub; };
+    const RootKey keys[] = {
+        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
+        { HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
+        { HKEY_CURRENT_USER,  L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
     };
-    for (auto keyPath : keys) {
+
+    auto readStr = [](HKEY h, const wchar_t* name) -> std::wstring {
+        DWORD type = 0, sz = 0;
+        if (RegQueryValueExW(h, name, nullptr, &type, nullptr, &sz) != ERROR_SUCCESS) return L"";
+        if (type != REG_SZ && type != REG_EXPAND_SZ) return L"";
+        std::wstring val(sz / sizeof(wchar_t), L'\0');
+        if (RegQueryValueExW(h, name, nullptr, nullptr,
+                             reinterpret_cast<LPBYTE>(&val[0]), &sz) != ERROR_SUCCESS) return L"";
+        // Trim trailing nulls
+        while (!val.empty() && val.back() == L'\0') val.pop_back();
+        return val;
+    };
+
+    for (const auto& k : keys) {
         HKEY hKey;
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_READ, &hKey) != ERROR_SUCCESS) continue;
+        if (RegOpenKeyExW(k.root, k.sub, 0, KEY_READ, &hKey) != ERROR_SUCCESS) continue;
         DWORD idx = 0;
         wchar_t subKey[256];
         DWORD sz = 256;
         while (RegEnumKeyExW(hKey, idx++, subKey, &sz, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
             HKEY hSub;
             if (RegOpenKeyExW(hKey, subKey, 0, KEY_READ, &hSub) == ERROR_SUCCESS) {
-                wchar_t display[256] = {}, uninst[2048] = {};
-                DWORD ds = sizeof(display), us = sizeof(uninst);
-                RegQueryValueExW(hSub, L"DisplayName", nullptr, nullptr, (BYTE*)display, &ds);
-                RegQueryValueExW(hSub, L"UninstallString", nullptr, nullptr, (BYTE*)uninst, &us);
-                if (display[0] && uninst[0]) {
-                    std::string dn = ws_to_utf8(display);
-                    std::string ldn = dn;
-                    for (auto& c : ldn) c = (char)tolower((unsigned char)c);
-                    if (ldn.find(lowerName) != std::string::npos) {
-                        RegCloseKey(hSub);
-                        RegCloseKey(hKey);
-                        return ws_to_utf8(uninst);
-                    }
+                // Skip hidden system components and rollups
+                DWORD sysComponent = 0, dwordSz = sizeof(DWORD);
+                RegQueryValueExW(hSub, L"SystemComponent", nullptr, nullptr,
+                                 reinterpret_cast<LPBYTE>(&sysComponent), &dwordSz);
+                if (sysComponent == 1) { RegCloseKey(hSub); sz = 256; continue; }
+                if (!readStr(hSub, L"ParentKeyName").empty()) { RegCloseKey(hSub); sz = 256; continue; }
+
+                std::wstring dn  = readStr(hSub, L"DisplayName");
+                if (dn.empty()) { RegCloseKey(hSub); sz = 256; continue; }
+
+                std::wstring us  = readStr(hSub, L"UninstallString");
+                std::wstring il  = readStr(hSub, L"InstallLocation");
+                std::wstring di  = readStr(hSub, L"DisplayIcon");
+                std::wstring pub = readStr(hSub, L"Publisher");
+                std::wstring ver = readStr(hSub, L"DisplayVersion");
+
+                if (cb && cb(dn, us, il, di, pub, ver)) {
+                    RegCloseKey(hSub);
+                    RegCloseKey(hKey);
+                    return;
                 }
                 RegCloseKey(hSub);
             }
@@ -1482,21 +2013,170 @@ std::string findUninstallString(const std::string& appName) {
         }
         RegCloseKey(hKey);
     }
-    return "";
 }
 
-// Path validation wrapper — returns empty string on success, error message on failure
-static std::string checkPath(const std::string& utf8Path, const std::string& operation) {
+// Strip quotes and trailing ",N" icon index from a path; expand env-vars
+static std::wstring normalizeExePath(const std::wstring& raw) {
+    std::wstring s = raw;
+    // Strip surrounding quotes
+    if (s.size() >= 2 && s.front() == L'"' && s.back() == L'"') {
+        s = s.substr(1, s.size() - 2);
+    }
+    // Trim trailing icon index ",0" or ", 0"
+    size_t comma = s.rfind(L',');
+    if (comma != std::wstring::npos) {
+        std::wstring tail = s.substr(comma + 1);
+        bool digits = !tail.empty();
+        for (wchar_t c : tail) if (c < L'0' || c > L'9') { digits = false; break; }
+        if (digits) s = s.substr(0, comma);
+    }
+    // Trim trailing whitespace
+    while (!s.empty() && (s.back() == L' ' || s.back() == L'\t' || s.back() == L'\r' || s.back() == L'\n')) s.pop_back();
+    return s;
+}
+
+// Extract the leading exe path from an UninstallString (handles "C:\path\app.exe" /uninstall)
+static std::wstring extractExeFromCmd(const std::wstring& cmd) {
+    if (cmd.empty()) return L"";
+    std::wstring s = cmd;
+    if (s.front() == L'"') {
+        size_t close = s.find(L'"', 1);
+        if (close != std::wstring::npos) return s.substr(1, close - 1);
+    }
+    // Unquoted: split at first whitespace
+    size_t sp = s.find_first_of(L" \t");
+    return sp == std::wstring::npos ? s : s.substr(0, sp);
+}
+
+// First matching uninstall command (DisplayName contains appName, case-insensitive)
+static std::string findUninstallString(const std::string& appName) {
+    std::string lowerName = appName;
+    for (auto& c : lowerName) c = (char)tolower((unsigned char)c);
+    std::string result;
+    enumUninstallApps([&](const std::wstring& dn, const std::wstring& us,
+                          const std::wstring&, const std::wstring&,
+                          const std::wstring&, const std::wstring&) -> bool {
+        if (us.empty()) return false;
+        std::string d = ws_to_utf8(dn);
+        std::string ld = d;
+        for (auto& c : ld) c = (char)tolower((unsigned char)c);
+        if (ld.find(lowerName) != std::string::npos) {
+            result = ws_to_utf8(us);
+            return true;
+        }
+        return false;
+    });
+    return result;
+}
+
+// Try InstallLocation for an exe with one of the conventional names
+static std::wstring guessExeInInstallLocation(const std::wstring& installLocation,
+                                              const std::wstring& displayName) {
+    if (installLocation.empty()) return L"";
+    std::wstring dir = installLocation;
+    while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+    if (dir.empty()) return L"";
+    // Candidate names: app.exe, <DisplayName>.exe, launcher.exe, app/Launcher.exe
+    std::wstring dnLower = displayName;
+    for (auto& c : dnLower) c = towlower(c);
+    std::vector<std::wstring> candidates;
+    auto addCandidate = [&](const std::wstring& n) {
+        if (std::find(candidates.begin(), candidates.end(), n) == candidates.end())
+            candidates.push_back(n);
+    };
+    addCandidate(dir + L"\\app.exe");
+    addCandidate(dir + L"\\App.exe");
+    addCandidate(dir + L"\\launcher.exe");
+    addCandidate(dir + L"\\Launcher.exe");
+    addCandidate(dir + L"\\" + dnLower + L".exe");
+    addCandidate(dir + L"\\" + displayName + L".exe");
+    for (const auto& c : candidates) {
+        if (GetFileAttributesW(c.c_str()) != INVALID_FILE_ATTRIBUTES) return c;
+    }
+    return L"";
+}
+
+// Always shows the permission modal and waits for the user's decision.
+// Bypasses the permission rule engine — used by path validation, which is a
+// separate security concern: the user must explicitly approve access to
+// directories outside the allowlist, regardless of any rule.
+//
+// Uses a native Windows MessageBox for reliability (WebView2 modals were
+// failing to appear in this app's context, so we use the OS dialog instead).
+static bool askUserModal(const std::string& permission, const std::string& pattern) {
+    LOG("PERM ask (native): %s / %s", permission.c_str(), pattern.c_str());
+
+    std::wstring msg = L"AI 请求访问以下路径（不在白名单内）：\n\n";
+    msg += utf8_to_ws(pattern);
+    msg += L"\n\n操作类型：";
+    msg += utf8_to_ws(permission);
+    msg += L"\n\n是否允许此次访问？";
+
+    int result = MessageBoxW(
+        g_hwnd, msg.c_str(), L"⚠ 路径访问确认",
+        MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND | MB_TASKMODAL);
+
+    LOG("PERM ask (native) result: %s", result == IDYES ? "allow" : "deny");
+    return result == IDYES;
+}
+
+// Path validation wrapper — returns empty string on success, error message on failure.
+// OpenCode-style: when path is outside the allowlist but not blocked, ASK the user
+// directly via the modal (bypassing permission rules) instead of returning a hard deny.
+// sessionId: when non-empty, the per-session allowedPaths set is consulted first
+// (so a path approved once in this session does not re-prompt), and new approvals
+// are added to that session's set.
+static std::string checkPath(const std::string& utf8Path, const std::string& operation,
+                             const std::string& sessionId = "") {
     std::wstring wpath = utf8_to_ws(utf8Path);
     auto result = validatePath(wpath, SecurityConfigLoader::loadFromFileAndEnv());
-    if (result.result != PathValidationResult::Ok) {
-        return "安全限制：" + result.reason + " (" + operation + ": " + utf8Path + ")";
+    if (result.result == PathValidationResult::Ok) return "";
+
+    // NotAllowed → ask user (OpenCode pattern). If they approve, proceed.
+    if (result.result == PathValidationResult::NotAllowed) {
+        // Per-session in-memory allowlist: skip the modal if this session already approved the path.
+        // TODO: replace native MessageBox with a custom JS modal that supports "remember"
+        // (which would persist to the session's ruleset, not just allowedPaths).
+        if (!sessionId.empty()) {
+            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+            auto sit = g_sessionState.find(utf8_to_ws(sessionId));
+            if (sit != g_sessionState.end() &&
+                sit->second.allowedPaths.count(utf8Path) > 0) {
+                LOG("PATH auto-allow (session=%s): %s", sessionId.c_str(), utf8Path.c_str());
+                return "";
+            }
+        }
+        std::string toolPerm = (operation.find("读") != std::string::npos ||
+                                operation.find("列") != std::string::npos) ? "read"
+                              : (operation.find("写") != std::string::npos) ? "write"
+                              : (operation.find("删除") != std::string::npos) ? "delete"
+                              : (operation.find("移动") != std::string::npos) ? "move"
+                              : (operation.find("复制") != std::string::npos) ? "copy"
+                              : "read";
+        LOG("PATH ask: %s / %s", toolPerm.c_str(), utf8Path.c_str());
+        if (askUserModal(toolPerm, utf8Path)) {
+            if (!sessionId.empty()) {
+                std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                g_sessionState[utf8_to_ws(sessionId)].allowedPaths.insert(utf8Path);
+            }
+            return "";  // user approved
+        }
+        return "安全限制：用户拒绝授权 (" + operation + ": " + utf8Path + ")";
     }
-    return "";
+
+    return "安全限制：" + result.reason + " (" + operation + ": " + utf8Path + ")";
 }
 
 // Legacy wrapper (delegates to ToolRegistry)
 std::string executeTool(const ToolCall& tc) {
+    // Honor Stop early — if the user aborted, don't run a tool that might block
+    // on a slow filesystem / network share. The agent loop's abort check would
+    // only fire after this returns, so without this the user can be stuck
+    // for tens of seconds before their click takes effect.
+    if (g_abortFlag.load()) {
+        LOG("executeTool: aborted before %s", tc.tool.c_str());
+        return "已停止";
+    }
     // Build JSON args from ToolCall fields
     std::ostringstream json;
     json << "{";
@@ -1520,16 +2200,20 @@ std::string executeTool(const ToolCall& tc) {
     // Build ToolContext with permission wired to existing confirmation flow
     ToolContext ctx;
     ctx.sessionId = ws_to_utf8(g_activeSession);
-    ctx.agent = g_agentMode ? "agent" : "chat";
+    // Per-session agent mode (captured at tool-build time — see OpenCode isolation plan)
+    {
+        std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+        ctx.agent = g_sessionState[utf8_to_ws(ctx.sessionId)].agentMode ? "agent" : "chat";
+    }
     ctx.ask = [&](const std::string& permission, const std::string& pattern) -> bool {
-        // 1. Check permission rules
-        PermissionRule::Action action = g_permission.evaluate(permission, pattern);
+        // 1. Check permission rules (session-scoped — other sessions' rules invisible)
+        PermissionRule::Action action = g_permission.evaluateForSession(permission, pattern, ctx.sessionId);
         if (action == PermissionRule::Allow) {
-            LOG("PERM allow (rule): %s / %s", permission.c_str(), pattern.c_str());
+            LOG("PERM allow (rule, session=%s): %s / %s", ctx.sessionId.c_str(), permission.c_str(), pattern.c_str());
             return true;
         }
         if (action == PermissionRule::Deny) {
-            LOG("PERM deny (rule): %s / %s", permission.c_str(), pattern.c_str());
+            LOG("PERM deny (rule, session=%s): %s / %s", ctx.sessionId.c_str(), permission.c_str(), pattern.c_str());
             execJsRaw(L"if(window.showToast){window.showToast('操作被安全策略拒绝: " +
                        utf8_to_ws(permission) + L"')}");
             return false;
@@ -1562,9 +2246,24 @@ std::string executeTool(const ToolCall& tc) {
         }
         execJsRaw(L"if(window.confirmPerm){window.confirmPerm('" +
                    esc(wperm) + L"','" + esc(wpat) + L"')}");
+        ShowTrayNotification(L"需要确认", L"Agent 请求权限确认，请点击确认");
         {
             std::unique_lock<std::mutex> lock(g_permMutex);
-            g_permCv.wait_for(lock, std::chrono::seconds(120), []{ return g_permReady; });
+            // Wake on user decision OR abort flag (so "停止" doesn't get stuck
+            // behind an unanswered permission dialog).
+            g_permCv.wait_for(lock, std::chrono::seconds(120), []{ return g_permReady || g_abortFlag.load(); });
+        }
+        // If the user pressed Stop while the modal was up, treat as deny so the
+        // tool returns immediately and the agent loop unwinds.
+        if (g_abortFlag.load()) {
+            {
+                std::lock_guard<std::mutex> lk(g_permMutex);
+                g_permReady = false;
+                g_permApproved = false;
+                g_permRemember = false;
+            }
+            LOG("PERM denied by abort: %s / %s (session=%s)", permission.c_str(), pattern.c_str(), ctx.sessionId.c_str());
+            return false;
         }
         bool approved = false;
         bool remember = false;
@@ -1577,22 +2276,17 @@ std::string executeTool(const ToolCall& tc) {
             g_permRemember = false;
         }
 
-        // 3. If user wants to remember, add a persistent rule
+        // 3. If user wants to remember, add a persistent rule (per-session)
         if (remember && approved) {
-            g_permission.addRule("user", {PermissionRule::Allow, permission, pattern, false});
-            LOG("PERM saved: allow %s / %s", permission.c_str(), pattern.c_str());
+            g_permission.addRule("session:" + ctx.sessionId, {PermissionRule::Allow, permission, pattern, false});
+            LOG("PERM saved: allow %s / %s (session=%s)", permission.c_str(), pattern.c_str(), ctx.sessionId.c_str());
         } else if (remember && !approved) {
-            g_permission.addRule("user", {PermissionRule::Deny, permission, pattern, false});
-            LOG("PERM saved: deny %s / %s", permission.c_str(), pattern.c_str());
+            g_permission.addRule("session:" + ctx.sessionId, {PermissionRule::Deny, permission, pattern, false});
+            LOG("PERM saved: deny %s / %s (session=%s)", permission.c_str(), pattern.c_str(), ctx.sessionId.c_str());
         }
-        // Persist to disk
+        // Persist THIS session's ruleset to disk
         if (remember) {
-            wchar_t permPath[MAX_PATH];
-            GetModuleFileNameW(nullptr, permPath, MAX_PATH);
-            wchar_t* s2 = wcsrchr(permPath, L'\\');
-            if (s2) *(s2 + 1) = 0;
-            wcscat(permPath, L"permissions.txt");
-            g_permission.saveToFile(ws_to_utf8(permPath));
+            saveSessionPermissions(utf8_to_ws(ctx.sessionId));
         }
 
         return approved;
@@ -1778,20 +2472,43 @@ static std::string executeTool_old(const ToolCall& tc) {
         if (tc.name.empty()) return "错误：请指定应用程序名称（name=应用名）";
         std::string uninst = findUninstallString(tc.name);
         if (uninst.empty()) return "未找到卸载程序: " + tc.name;
-        // Execute uninstall command
+
+        // Parse UninstallString into exe path and arguments
         std::wstring wcmd = utf8_to_ws(uninst);
+        std::wstring exePath, args;
+        if (!wcmd.empty() && wcmd[0] == L'"') {
+            size_t close = wcmd.find(L'"', 1);
+            if (close != std::wstring::npos) {
+                exePath = wcmd.substr(1, close - 1);
+                args = wcmd.substr(close + 1);
+                while (!args.empty() && (args[0] == L' ' || args[0] == L'\t')) args.erase(0, 1);
+            } else {
+                exePath = wcmd;
+            }
+        } else {
+            size_t sp = wcmd.find(L' ');
+            if (sp != std::wstring::npos) {
+                exePath = wcmd.substr(0, sp);
+                args = wcmd.substr(sp + 1);
+            } else {
+                exePath = wcmd;
+            }
+        }
+
         STARTUPINFOW si = {};
         PROCESS_INFORMATION pi = {};
         si.cb = sizeof(si);
-        if (CreateProcessW(nullptr, &wcmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        // Try direct CreateProcess first (works if no elevation needed)
+        if (CreateProcessW(exePath.c_str(), &wcmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
             return "已启动卸载程序: " + tc.name;
         }
-        // Try ShellExecute as fallback
-        HINSTANCE hi = ShellExecuteW(nullptr, L"open", wcmd.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        if ((INT_PTR)hi > 32) return "已启动卸载程序: " + tc.name;
-        return "无法启动卸载: " + tc.name;
+        DWORD err = GetLastError();
+        // Try ShellExecute with runas (requests UAC elevation)
+        HINSTANCE hi = ShellExecuteW(nullptr, L"runas", exePath.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
+        if ((INT_PTR)hi > 32) return "已启动卸载程序（请求管理员权限）: " + tc.name;
+        return "无法启动卸载: " + tc.name + " (CreateProcess 错误码: " + std::to_string(err) + ")";
     }
 
     if (tc.tool == "OPEN_APP_LOCATION") {
@@ -1867,8 +2584,8 @@ static std::string executeTool_old(const ToolCall& tc) {
         std::string b64 = captureWindowToBase64(tc.name);
         if (b64.empty()) return "错误：未找到包含 '" + tc.name + "' 的可见窗口，请先用 LIST_WINDOWS 查看所有窗口";
         {
-            std::lock_guard<std::mutex> lk(g_screenshotMutex);
-            g_pendingScreenshotB64 = b64;
+            std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+            g_sessionState[g_activeSession].pendingScreenshotB64 = b64;
         }
         {
             std::lock_guard<std::mutex> lk(g_streamMutex);
@@ -2088,7 +2805,10 @@ static BOOL CALLBACK findWndCb(HWND hwnd, LPARAM lParam) {
     for (auto& c : wTitle) c = (char)tolower((unsigned char)c);
     std::string q = ctx->search;
     for (auto& c : q) c = (char)tolower((unsigned char)c);
-    if (wTitle.find(q) != std::string::npos) {
+    bool hit = wTitle.find(q) != std::string::npos;
+    // DEBUG: log every candidate so we can see what the enumerator actually sees
+    LOG("findWndCb: title='%s' q='%s' hit=%d", ws_to_utf8(title).c_str(), ctx->search.c_str(), hit);
+    if (hit) {
         ctx->hwnd = hwnd;
         return FALSE;
     }
@@ -2098,7 +2818,13 @@ static BOOL CALLBACK findWndCb(HWND hwnd, LPARAM lParam) {
 std::string captureWindowToBase64(const std::string& windowTitle) {
     FindWndCtx ctx = { windowTitle, nullptr };
     EnumWindows(findWndCb, (LPARAM)&ctx);
-    if (!ctx.hwnd) return "";
+    if (!ctx.hwnd) {
+        LOG("captureWindowToBase64: NOT FOUND search='%s'", windowTitle.c_str());
+        return "";
+    }
+    wchar_t matchedTitle[512] = {};
+    GetWindowTextW(ctx.hwnd, matchedTitle, 512);
+    LOG("captureWindowToBase64: MATCHED hwnd=%p title='%s'", ctx.hwnd, ws_to_utf8(matchedTitle).c_str());
 
     HWND hwnd = ctx.hwnd;
     if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
@@ -2259,7 +2985,7 @@ static void registerAllTools() {
          {{"path", P::String, "Full Windows absolute path to the file", true}}},
         [](const std::string& argsJson, ToolContext& ctx) -> ToolResult {
             std::string path = jsonGetString(argsJson, "path");
-            std::string pathErr = checkPath(path, "读取文件");
+            std::string pathErr = checkPath(path, "读取文件", ctx.sessionId);
             if (!pathErr.empty()) return ToolResult::error("安全限制", pathErr);
             std::wstring wpath = utf8_to_ws(path);
             HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ,
@@ -2292,7 +3018,7 @@ static void registerAllTools() {
         [](const std::string& argsJson, ToolContext& ctx) -> ToolResult {
             std::string path = jsonGetString(argsJson, "path");
             std::string content = jsonGetString(argsJson, "content");
-            std::string pathErr = checkPath(path, "写入文件");
+            std::string pathErr = checkPath(path, "写入文件", ctx.sessionId);
             if (!pathErr.empty()) return ToolResult::error("安全限制", pathErr);
             size_t ls = path.find_last_of("\\/");
             if (ls != std::string::npos)
@@ -2320,9 +3046,9 @@ static void registerAllTools() {
             std::string dst = jsonGetString(argsJson, "destination");
             if (src.empty() || dst.empty())
                 return ToolResult::error("参数错误", "需要 source 和 destination");
-            std::string se = checkPath(src, "复制文件(源)");
+            std::string se = checkPath(src, "复制文件(源)", ctx.sessionId);
             if (!se.empty()) return ToolResult::error("安全限制", se);
-            std::string de = checkPath(dst, "复制文件(目标)");
+            std::string de = checkPath(dst, "复制文件(目标)", ctx.sessionId);
             if (!de.empty()) return ToolResult::error("安全限制", de);
             if (dst.find(':') == std::string::npos) {
                 size_t ls = src.find_last_of("\\/");
@@ -2343,7 +3069,7 @@ static void registerAllTools() {
          {{"path", P::String, "Full Windows absolute path to delete", true}}},
         [](const std::string& argsJson, ToolContext& ctx) -> ToolResult {
             std::string path = jsonGetString(argsJson, "path");
-            std::string pathErr = checkPath(path, "删除文件");
+            std::string pathErr = checkPath(path, "删除文件", ctx.sessionId);
             if (!pathErr.empty()) return ToolResult::error("安全限制", pathErr);
             std::wstring wpath = utf8_to_ws(path);
             DWORD attrs = GetFileAttributesW(wpath.c_str());
@@ -2367,9 +3093,9 @@ static void registerAllTools() {
             std::string dst = jsonGetString(argsJson, "destination");
             if (src.empty() || dst.empty())
                 return ToolResult::error("参数错误", "需要 source 和 destination");
-            std::string se = checkPath(src, "移动文件(源)");
+            std::string se = checkPath(src, "移动文件(源)", ctx.sessionId);
             if (!se.empty()) return ToolResult::error("安全限制", se);
-            std::string de = checkPath(dst, "移动文件(目标)");
+            std::string de = checkPath(dst, "移动文件(目标)", ctx.sessionId);
             if (!de.empty()) return ToolResult::error("安全限制", de);
             if (dst.find(':') == std::string::npos) {
                 size_t ls = src.find_last_of("\\/");
@@ -2390,14 +3116,22 @@ static void registerAllTools() {
          {{"path", P::String, "Full Windows absolute path to the directory", true}}},
         [](const std::string& argsJson, ToolContext& ctx) -> ToolResult {
             std::string path = jsonGetString(argsJson, "path");
-            std::string pathErr = checkPath(path, "列出目录");
+            std::string pathErr = checkPath(path, "列出目录", ctx.sessionId);
             if (!pathErr.empty()) return ToolResult::error("安全限制", pathErr);
             std::wstring wpath = utf8_to_ws(path);
             if (wpath.back() != L'\\') wpath += L'\\';
             WIN32_FIND_DATAW fd;
             HANDLE hFind = FindFirstFileW((wpath + L"*").c_str(), &fd);
-            if (hFind == INVALID_HANDLE_VALUE)
-                return ToolResult::error("无法访问", path);
+            if (hFind == INVALID_HANDLE_VALUE) {
+                DWORD err = GetLastError();
+                const char* hint = "";
+                if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+                    hint = "（目录不存在）";
+                else if (err == ERROR_ACCESS_DENIED)
+                    hint = "（访问被拒绝）";
+                return ToolResult::error("无法访问",
+                    path + " (code=" + std::to_string(err) + ") " + hint);
+            }
             std::string result = "目录内容 (" + path + "):\n";
             int count = 0;
             do {
@@ -2415,21 +3149,70 @@ static void registerAllTools() {
 
     // -- LIST_APPS --
     g_toolRegistry.registerTool(
-        {"LIST_APPS", "List installed applications from the Start Menu (up to 500).", {}},
+        {"LIST_APPS", "List installed applications from Start Menu and Windows Registry (up to 500).", {}},
         [](const std::string& argsJson, ToolContext& ctx) -> ToolResult {
             std::string result;
             int count = 0;
+            int regCount = 0;
+            std::set<std::string> menuNames;  // lowercase display names from Start Menu (for de-dup)
             wchar_t buf[MAX_PATH];
+
             if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROGRAMS, nullptr, 0, buf))) {
                 result += "=== 用户开始菜单 ===\n";
-                scanStartMenu(buf, result, count);
+                scanStartMenu(buf, result, count, &menuNames);
             }
             if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_PROGRAMS, nullptr, 0, buf))) {
                 result += "=== 所有用户开始菜单 ===\n";
-                scanStartMenu(buf, result, count);
+                scanStartMenu(buf, result, count, &menuNames);
             }
-            if (result.empty()) result = "未找到已安装的应用程序";
-            return ToolResult::ok("应用列表", result).withMeta("count", std::to_string(count));
+
+            // Registry Uninstall (apps without a Start Menu shortcut)
+            result += "=== 已安装应用（注册表）===\n";
+            int regLinesBefore = (int)result.size();
+            enumUninstallApps([&](const std::wstring& dn, const std::wstring& /*us*/,
+                                  const std::wstring& il, const std::wstring& di,
+                                  const std::wstring& pub, const std::wstring& ver) -> bool {
+                if ((int)result.size() - regLinesBefore > 40000) return true;  // cap text size
+                std::string nameUtf8 = ws_to_utf8(dn);
+                std::string lname = nameUtf8;
+                for (auto& c : lname) c = (char)tolower((unsigned char)c);
+                // De-dup: skip if already listed via Start Menu (case-insensitive exact match)
+                if (menuNames.count(lname)) return false;
+
+                result += "  " + nameUtf8;
+                bool hasDetail = false;
+                if (!ver.empty()) { result += "  (" + ws_to_utf8(ver) + ")"; hasDetail = true; }
+                if (!il.empty()) {
+                    std::wstring ilN = il;
+                    while (!ilN.empty() && ilN.back() == L'\\') ilN.pop_back();
+                    result += "  位置: " + ws_to_utf8(ilN);
+                    hasDetail = true;
+                } else if (!di.empty()) {
+                    std::wstring exe = normalizeExePath(di);
+                    if (!exe.empty()) {
+                        result += "  →  " + ws_to_utf8(exe);
+                        hasDetail = true;
+                    }
+                }
+                if (!pub.empty()) {
+                    std::string p = ws_to_utf8(pub);
+                    if (p.size() > 60) p = p.substr(0, 57) + "...";
+                    if (hasDetail) result += "  · " + p;
+                    else result += "  (" + p + ")";
+                }
+                result += "\n";
+                regCount++;
+                return false;
+            });
+            if (regCount == 0) {
+                result += "  (无新条目)\n";
+            }
+
+            result += "\n共找到 " + std::to_string(count + regCount) + " 个应用 ("
+                      + std::to_string(count) + " 个开始菜单 + "
+                      + std::to_string(regCount) + " 个注册表)\n";
+            return ToolResult::ok("应用列表", result)
+                .withMeta("count", std::to_string(count + regCount));
         }
     );
 
@@ -2454,11 +3237,44 @@ static void registerAllTools() {
          {{"name", P::String, "Application name", true}}},
         [](const std::string& argsJson, ToolContext& ctx) -> ToolResult {
             std::string name = jsonGetString(argsJson, "name");
+            // Require explicit user approval before uninstalling (destructive op)
+            if (ctx.ask && !ctx.ask("execute", "uninstall: " + name))
+                return ToolResult::error("用户拒绝", "卸载被拒绝: " + name);
             std::string uninst = findUninstallString(name);
             if (uninst.empty()) return ToolResult::error("未找到", name);
-            HINSTANCE hi = ShellExecuteW(nullptr, L"open", utf8_to_ws(uninst).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            if ((INT_PTR)hi <= 32)
-                return ToolResult::error("卸载失败", uninst);
+
+            // Parse UninstallString into exe path and arguments
+            std::wstring wcmd = utf8_to_ws(uninst);
+            std::wstring exePath, args;
+            if (!wcmd.empty() && wcmd[0] == L'"') {
+                size_t close = wcmd.find(L'"', 1);
+                if (close != std::wstring::npos) {
+                    exePath = wcmd.substr(1, close - 1);
+                    args = wcmd.substr(close + 1);
+                    while (!args.empty() && (args[0] == L' ' || args[0] == L'\t')) args.erase(0, 1);
+                } else {
+                    exePath = wcmd;
+                }
+            } else {
+                size_t sp = wcmd.find(L' ');
+                if (sp != std::wstring::npos) {
+                    exePath = wcmd.substr(0, sp);
+                    args = wcmd.substr(sp + 1);
+                } else {
+                    exePath = wcmd;
+                }
+            }
+
+            // Use "runas" to request administrator elevation (most uninstallers need it)
+            HINSTANCE hi = ShellExecuteW(nullptr, L"runas", exePath.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
+            if ((INT_PTR)hi <= 32) {
+                std::string err = "code=" + std::to_string((INT_PTR)hi);
+                // Try plain "open" as fallback (no elevation)
+                HINSTANCE hi2 = ShellExecuteW(nullptr, L"open", exePath.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
+                if ((INT_PTR)hi2 > 32)
+                    return ToolResult::ok("卸载中", "已启动卸载（无管理员权限）: " + name + "\n命令: " + uninst);
+                return ToolResult::error("卸载失败", uninst + " (" + err + ")");
+            }
             return ToolResult::ok("卸载中", "已启动卸载: " + name + "\n命令: " + uninst);
         }
     );
@@ -2550,8 +3366,8 @@ static void registerAllTools() {
             if (b64.empty())
                 return ToolResult::error("截图失败", "未找到包含 '" + name + "' 的可见窗口");
             {
-                std::lock_guard<std::mutex> lk(g_screenshotMutex);
-                g_pendingScreenshotB64 = b64;
+                std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                g_sessionState[utf8_to_ws(ctx.sessionId)].pendingScreenshotB64 = b64;
             }
             {
                 std::lock_guard<std::mutex> lk(g_streamMutex);
@@ -2590,6 +3406,21 @@ public:
             sender->add_WebMessageReceived(new WebMsgHandler(), &t);
             LOG("WebMessage handler registered");
             loadHistoryAndPush();
+            // Sync initial Agent mode state to UI button (per-session)
+            {
+                std::wstring sid;
+                {
+                    std::lock_guard<std::mutex> lk(g_historyMutex);
+                    sid = g_activeSession;
+                }
+                bool initialMode = true;
+                if (!sid.empty()) {
+                    std::lock_guard<std::mutex> lk(g_sessionStateMutex);
+                    initialMode = g_sessionState[sid].agentMode; // lazy create
+                }
+                execJsRaw(L"if(window.setAgentMode)window.setAgentMode(" +
+                          std::wstring(initialMode ? L"true" : L"false") + L")");
+            }
             // Init permission system
             {
                 wchar_t permPath[MAX_PATH];
@@ -2597,12 +3428,29 @@ public:
                 wchar_t* s = wcsrchr(permPath, L'\\');
                 if (s) *(s + 1) = 0;
                 wcscat(permPath, L"permissions.txt");
+                // Load legacy user-approved rules from permissions.txt (global baseline).
+                // Session rules will be loaded on top of this below so they win
+                // via the "last matching rule" semantics in PermissionSystem::evaluate.
                 g_permission.loadFromFile(ws_to_utf8(permPath));
-                // Set defaults (lower priority — user rules override)
+                // Set defaults (lower priority — user and session rules override)
                 g_permission.setRuleset("chat-defaults", chatAgentDefaults());
                 g_permission.setRuleset("agent-defaults", agentModeDefaults());
                 LOG("Permission system loaded: %zu rulesets",
                     g_permission.rulesets().size());
+            }
+            // Load the active session's permission ruleset (if any) so that
+            // session-specific remembers apply on startup without requiring a
+            // session switch. handleSwitchSession will reload it on every swap.
+            {
+                std::wstring sid;
+                {
+                    std::lock_guard<std::mutex> lk(g_historyMutex);
+                    sid = g_activeSession;
+                }
+                if (!sid.empty()) {
+                    loadSessionPermissions(sid);
+                    LOG("Loaded session permissions for active: %ls", sid.c_str());
+                }
             }
             // Init MCP servers in background (don't block UI)
             std::thread([]() {
@@ -2634,6 +3482,8 @@ public:
                 LOG("First launch detected — opening settings");
                 execJsRaw(L"setTimeout(function(){if(window.openSettings)window.openSettings()},500)");
             }
+            // Animate splash screen to top-left corner
+            execJsRaw(L"setTimeout(function(){if(window.hideSplash)window.hideSplash()},300)");
         }
         return S_OK;
     }
@@ -2706,7 +3556,7 @@ public:
         }
 
         // Navigate to embedded HTML (UTF-8 -> wide string)
-        g_webview->NavigateToString(utf8_to_ws(g_htmlUI).c_str());
+        g_webview->NavigateToString(utf8_to_ws(UI_HTML).c_str());
         m_flag->clear();
         return S_OK;
     }
@@ -2732,6 +3582,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == TRUE) return 0;
         break;
 
+    case WM_KEYDOWN:
+        if (wp == VK_F12 && g_webview) {
+            g_webview->OpenDevToolsWindow();
+            return 0;
+        }
+        break;
+
     case WM_NCHITTEST: {
         POINT pt = { LOWORD(lp), HIWORD(lp) };
         RECT rc; GetClientRect(hwnd, &rc);
@@ -2751,6 +3608,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_AI_DELTA: {
+        // Cross-session isolation: if the worker that owns the stream is for a
+        // session other than the one currently active, do NOT process deltas
+        // (or the done/loading state). The queue is left intact, so when the
+        // user switches back they pick up where they left off. The worker
+        // continues running for its own session until it finishes or aborts.
+        {
+            std::wstring activeSid;
+            {
+                std::lock_guard<std::mutex> lk(g_historyMutex);
+                activeSid = g_activeSession;
+            }
+            std::wstring ownerSid;
+            {
+                std::lock_guard<std::mutex> lk(g_streamMutex);
+                ownerSid = g_streamOwnerSession;
+            }
+            if (!ownerSid.empty() && ownerSid != activeSid) {
+                return 0; // not for this session — skip and don't re-post
+            }
+        }
         // Process ONE item from stream queue per message to allow browser repaints between deltas
         std::wstring delta;
         bool hasMore = false;
@@ -2788,12 +3665,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::wstring script = delta.substr(14);
                 std::wstring escaped = escapeJs(script);
                 execJsRaw(L"if(window.confirmPowerShell){window.confirmPowerShell('" + escaped + L"')}");
+                ShowTrayNotification(L"需要确认", L"Agent 请求执行 PowerShell 命令，请点击确认");
             } else if (delta.find(L"__CONFIRM_KILL__") == 0) {
                 std::wstring body = delta.substr(17);
                 size_t sep = body.find(L'|');
                 std::wstring name = escapeJs(body.substr(0, sep));
                 std::wstring pid  = escapeJs(body.substr(sep + 1));
                 execJsRaw(L"if(window.confirmKill){window.confirmKill('" + name + L"','" + pid + L"')}");
+                ShowTrayNotification(L"需要确认", L"Agent 请求终止进程，请点击确认");
             } else if (delta.find(L"__IMAGE__") == 0) {
                 std::wstring body = delta.substr(9);
                 size_t sep = body.find(L'\x1f');
@@ -2810,11 +3689,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 execJsRaw(L"if(window.appendToolArgs){window.appendToolArgs('" + argsText + L"')}");
             } else if (delta.find(L"__TOOL__") == 0) {
                 std::wstring body = delta.substr(8);
-                size_t sep = body.find(L'\x1f');
-                if (sep != std::wstring::npos) {
-                    std::wstring name = escapeJs(body.substr(0, sep));
-                    std::wstring result = escapeJs(body.substr(sep + 1));
-                    execJsRaw(L"if(window.addToolBlock)window.addToolBlock('" + name + L"','" + result + L"')");
+                size_t sep1 = body.find(L'\x1f');
+                if (sep1 != std::wstring::npos) {
+                    std::wstring name = escapeJs(body.substr(0, sep1));
+                    std::wstring rest = body.substr(sep1 + 1);
+                    size_t sep2 = rest.find(L'\x1f');
+                    std::wstring argsStr, result;
+                    if (sep2 != std::wstring::npos) {
+                        argsStr = escapeJs(rest.substr(0, sep2));
+                        result  = escapeJs(rest.substr(sep2 + 1));
+                    } else {
+                        // Backward compat: 2-segment (name\x1fresult)
+                        result  = escapeJs(rest);
+                        argsStr = L"";
+                    }
+                    execJsRaw(L"if(window.addToolBlock){window.addToolBlock('" + name + L"','"
+                              + argsStr + L"','" + result + L"')}");
                 }
             } else if (!delta.empty() && delta[0] == L'\x01') {
                 std::wstring think = escapeJs(delta.substr(1));
@@ -2831,6 +3721,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (done && !g_agentRunning) {
             g_aiBusy = false;
             execJs(L"window.setLoading(false)");
+            ShowTrayNotification(L"Open Aries AI", L"AI 回复已完成");
         }
         return 0;
     }
@@ -2912,8 +3803,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
+    case WM_TRAYMSG: {
+        if (lp == WM_LBUTTONUP || lp == WM_LBUTTONDBLCLK || lp == NIN_BALLOONUSERCLICK) {
+            ActivateWindow();
+            return 0;
+        }
+        if (lp == WM_RBUTTONUP) {
+            ActivateWindow();
+            return 0;
+        }
+        return 0;
+    }
+
     case WM_CLOSE: DestroyWindow(hwnd); return 0;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY:
+        RemoveTrayIcon();
+        PostQuitMessage(0);
+        return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -2981,7 +3887,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
             L"- 写入文件**必须**用 WRITE_FILE\n"
             L"- 以上工具直接执行，无需用户确认\n"
             L"- **禁止**对文件复制/删除/移动/列表/读写操作使用 RUN_PS！！RUN_PS 仅限纯系统管理（如注册表、服务管理）\n\n"
-            L"重要：所有路径必须是完整的Windows绝对路径（如 C:\\Users\\用户名\\Desktop），不要使用 ~/ 或 / 开头的Unix路径。";
+            L"重要：所有路径必须是完整的Windows绝对路径（如 C:\\Users\\用户名\\Desktop），不要使用 ~/ 或 / 开头的Unix路径。\n\n"
+            L"## 输出格式规范（必须遵守）\n"
+            L"- 使用 GitHub-flavored Markdown。\n"
+            L"- 禁止使用嵌套列表，保持列表扁平（单层级）。如需层级，拆分为独立列表或段落。\n"
+            L"- 有序列表仅使用 `1. 2. 3.` 格式（带句点），禁止使用 `1)`。\n"
+            L"- 标题可选，仅在必要时使用。如使用，用简短标题（1-3 词）包裹在 **…** 中，标题后不要空行。不要用 `#` 标题语法。\n"
+            L"- 行内代码块用于命令、路径、环境变量、函数名、关键字。\n"
+            L"- 多行代码片段用围栏代码块包裹，尽可能带上语言标签。\n"
+            L"- 表格必须使用标准 Markdown 表格格式：每行单独一行，以 `|` 开头和结尾；表头下方必须紧跟 `|---|---|` 分隔行；行与行之间用换行符分隔，禁止用空格或 `||` 连接多行表格。\n"
+            L"- 除非用户明确要求，否则禁止使用 emoji 或全角破折号。";
     }
 
     if (!load_webview2()) {
@@ -3030,26 +3945,29 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);
 
-    // Load app icon from PNG (next to exe)
+    // Init system tray icon for notifications
+    InitTrayIcon(hInst);
     {
-        // Ensure GDI+ is up
-        static ULONG_PTR gdiToken = 0;
-        static bool gdiInit = false;
-        if (!gdiInit) {
-            Gdiplus::GdiplusStartupInput inp;
-            Gdiplus::GdiplusStartup(&gdiToken, &inp, nullptr);
-            gdiInit = true;
-        }
+        // Wait a moment for the tray icon to register before showing balloon
+        Sleep(500);
+        NOTIFYICONDATAW nid = g_nid;
+        nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
+        nid.uFlags = NIF_INFO;
+        wcscpy_s(nid.szInfoTitle, L"Open Aries AI");
+        wcscpy_s(nid.szInfo, L"应用已启动");
+        nid.dwInfoFlags = NIIF_NONE | NIIF_NOSOUND;
+        BOOL ok = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        LOG("Startup notify: modify=%d", (int)ok);
+    }
+
+    // Load app icon from ICO (next to exe)
+    {
         wchar_t iconPath[MAX_PATH];
         GetModuleFileNameW(nullptr, iconPath, MAX_PATH);
         wchar_t* s = wcsrchr(iconPath, L'\\');
         if (s) *(s + 1) = 0;
-        wcscat(iconPath, L"app_icon.png");
-        Gdiplus::Bitmap bmp(iconPath);
-        HICON hIcon = nullptr;
-        if (bmp.GetLastStatus() == Gdiplus::Ok) {
-            bmp.GetHICON(&hIcon);
-        }
+        wcscat(iconPath, L"app_icon.ico");
+        HICON hIcon = (HICON)LoadImageW(nullptr, iconPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
         if (hIcon) {
             SendMessageW(g_hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
             SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
