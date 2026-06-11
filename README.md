@@ -226,6 +226,11 @@ g++ -O2 -std=c++17 -static-libgcc -static-libstdc++ \
     ├── mcp_server.exe           # 编译好的 MCP 服务器
     ├── preview.cpp              # 屏幕预览工具源码
     └── build.bat                # demo 构建脚本
+│
+└── legacy/                      # 旧版 Open Aries AI 完整代码（CLI + Web）
+    ├── aries_agent.cpp          # 旧版 CLI 主程序
+    ├── web/                     # 旧版 Web 界面
+    └── ...                      # 其他旧版源码（保留历史供参考）
 ```
 
 ---
