@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open Aries AI — Windows Desktop AI Assistant</title>
+<style>
+/* === 顶部版本标签条 === */
+.version-strip {
+    background: linear-gradient(90deg, rgba(93,156,255,.08), rgba(93,156,255,.14), rgba(93,156,255,.08));
+    border-bottom: 1px solid rgba(93,156,255,.15);
+    text-align: center; padding: 7px 16px;
+    font-size: 12px; color: var(--tag-text);
+    letter-spacing: .03em;
+}
+.version-strip strong { color: var(--accent); }
+.version-strip a { color: var(--text-secondary); margin-left: 12px; font-size: 11px; text-decoration: none; border-bottom: 1px dashed var(--text-secondary); }
+.version-strip a:hover { color: var(--accent); border-color: var(--accent); }
+:root {
+    --bg: #0A0E14;
+    --surface: #0F141B;
+    --card: #131C26;
+    --border: #1F2D3D;
+    --text: #E4ECFA;
+    --text-secondary: #7B8BA3;
+    --accent: #5D9CFF;
+    --accent-hover: #3D84F0;
+    --accent-glow: rgba(93,156,255,.15);
+    --tag-bg: rgba(93,156,255,.12);
+    --tag-border: rgba(93,156,255,.25);
+    --tag-text: #7DB4FF;
+    --radius: 12px;
+    --radius-lg: 16px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, "Segoe UI", "Inter", "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: var(--bg); color: var(--text);
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+/* Nav */
+nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(15,20,27,.85); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+}
+nav .container {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 56px;
+}
+.nav-brand { font-size: 18px; font-weight: 700; letter-spacing: -.02em; color: var(--text); text-decoration: none; }
+.nav-brand span { color: var(--accent); }
+.nav-links { display: flex; gap: 28px; list-style: none; }
+.nav-links a { color: var(--text-secondary); text-decoration: none; font-size: 14px; transition: color .15s; }
+.nav-links a:hover { color: var(--text); }
+.btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 22px; border-radius: 8px; font-size: 14px;
+    font-weight: 500; text-decoration: none; cursor: pointer;
+    border: none; transition: all .15s;
+}
+.btn-primary { background: var(--accent); color: #0F141B; }
+.btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Hero */
+.hero { padding: 140px 0 80px; text-align: center; }
+.hero-icon { width: 72px; height: 72px; border-radius: 16px; margin: 0 auto 28px; background: url(https://open-aries-ai.xn--9kq396ceqaq4si9m.cn/app_icon.png) center/cover; }
+.hero h1 { font-size: 48px; font-weight: 800; letter-spacing: -.03em; margin-bottom: 16px; }
+.hero h1 span { color: var(--accent); }
+.hero p { font-size: 18px; color: var(--text-secondary); max-width: 560px; margin: 0 auto 32px; }
+.hero .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.version-tag { font-size: 12px; color: var(--text-secondary); margin-top: 16px; }
+
+/* Sections */
+section { padding: 80px 0; }
+.section-title { font-size: 32px; font-weight: 700; text-align: center; margin-bottom: 12px; letter-spacing: -.02em; }
+.section-sub { font-size: 16px; color: var(--text-secondary); text-align: center; margin-bottom: 48px; }
+
+/* Features */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.feature-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 28px;
+    transition: border-color .2s, transform .2s;
+}
+.feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.feature-icon { font-size: 28px; margin-bottom: 16px; }
+.feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.feature-card p { font-size: 14px; color: var(--text-secondary); }
+
+/* Tools */
+.tools-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.tool-chip {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; font-size: 13px;
+    text-align: center; color: var(--text-secondary);
+    font-family: Consolas, "Courier New", monospace;
+}
+
+/* Architecture */
+.arch-block {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 40px;
+    text-align: center; max-width: 800px; margin: 0 auto;
+}
+.arch-row { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.arch-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 20px; font-size: 13px;
+    font-weight: 500; font-family: Consolas, monospace;
+}
+.arch-box.accent { border-color: var(--accent); color: var(--accent); }
+.arch-arrow { color: var(--text-secondary); font-size: 20px; }
+
+/* CTA */
+.cta {
+    text-align: center; padding: 100px 0;
+    background: linear-gradient(180deg, transparent, var(--card), transparent);
+}
+.cta h2 { font-size: 36px; font-weight: 700; margin-bottom: 12px; }
+.cta p { color: var(--text-secondary); margin-bottom: 28px; font-size: 16px; }
+
+/* Footer */
+footer { border-top: 1px solid var(--border); padding: 28px 0; text-align: center; }
+footer p { font-size: 13px; color: var(--text-secondary); }
+footer a { color: var(--accent); text-decoration: none; }
+
+@media (max-width: 768px) {
+    .hero h1 { font-size: 32px; }
+    .features { grid-template-columns: 1fr; }
+    .tools-grid { grid-template-columns: repeat(2, 1fr); }
+    .arch-row { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div class="version-strip">
+    <strong>Open Aries AI Desktop</strong> — 新一代原生桌面版 (C++17 + WebView2) &nbsp;|&nbsp; 单文件便携，离线可用
+    <a href="index.html">查看旧版项目页 (CLI + Web)</a>
+</div>
+
+<nav>
+    <div class="container">
+        <a href="#" class="nav-brand"><span>Open</span> Aries AI</a>
+        <ul class="nav-links">
+            <li><a href="#features">功能</a></li>
+            <li><a href="#tools">工具</a></li>
+            <li><a href="#architecture">架构</a></li>
+            <li><a href="#vs">vs旧版</a></li>
+            <li><a href="#download">下载</a></li>
+        </ul>
+    </div>
+</nav>
+
+<main>
+    <section class="hero">
+        <div class="hero-icon"></div>
+        <div style="display:inline-block;background:var(--tag-bg);border:1px solid var(--tag-border);border-radius:20px;padding:4px 14px;font-size:11px;color:var(--tag-text);margin-bottom:20px;letter-spacing:.04em;text-transform:uppercase;">Desktop v1.0 · 原生应用</div>
+        <h1>让 AI <span>掌控</span> 你的桌面</h1>
+        <p>一个 <strong style="color:var(--text);">38MB 单文件</strong> 的原生 Windows 桌面 AI 助手。C++17 + WebView2，内嵌 Chromium 渲染，<strong style="color:var(--accent);">零外部依赖</strong>，所有资源编译进 exe。支持 Agent 自主工具调用、MCP 协议扩展与视觉识别。</p>
+        <div class="btns">
+            <a href="https://github.com/yunsjxh/Open-Aries-AI-Desktop/releases/latest" class="btn btn-primary">下载 Windows 版</a>
+            <a href="https://github.com/yunsjxh/Open-Aries-AI-Desktop" class="btn btn-outline" target="_blank">GitHub</a>
+        </div>
+        <p class="version-tag">v1.0.1 · Windows 10/11 · MIT 协议 · 单文件便携</p>
+    </section>
+
+    <section id="features">
+        <div class="container">
+            <h2 class="section-title">核心特性</h2>
+            <p class="section-sub">轻量、高速、完全可控</p>
+            <div class="features">
+                <div class="feature-card">
+                    <div class="feature-icon">&#9881;</div>
+                    <h3>Agent 自主工具调用</h3>
+                    <p>AI 可读写文件、执行 PowerShell、管理进程、截图窗口，无需人工干预。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#9741;</div>
+                    <h3>MCP 协议支持</h3>
+                    <p>接入 Model Context Protocol 生态，通过外部工具服务器无限扩展能力。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#9783;</div>
+                    <h3>视觉识别</h3>
+                    <p>支持截图分析，让 AI 看懂你的屏幕内容并作出智能决策。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#9776;</div>
+                    <h3>多模型兼容</h3>
+                    <p>兼容 OpenAI、DeepSeek、SiliconFlow 等全部 OpenAI 格式 API，自由选择模型。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#9788;</div>
+                    <h3>暗色主题</h3>
+                    <p>内置 Aries AI Android 同款暗色配色，护眼专业，一键切换。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#9992;</div>
+                    <h3>流式 SSE 输出</h3>
+                    <p>实时显示 AI 推理过程和回复，支持思考链展示，交互流畅自然。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="tools">
+        <div class="container">
+            <h2 class="section-title">15+ 内置工具</h2>
+            <p class="section-sub">Agent 模式下 AI 可自主调用的系统工具</p>
+            <div class="tools-grid">
+                <div class="tool-chip">READ_FILE</div>
+                <div class="tool-chip">WRITE_FILE</div>
+                <div class="tool-chip">COPY_FILE</div>
+                <div class="tool-chip">DELETE_FILE</div>
+                <div class="tool-chip">MOVE_FILE</div>
+                <div class="tool-chip">LIST_DIR</div>
+                <div class="tool-chip">LIST_APPS</div>
+                <div class="tool-chip">OPEN_APP</div>
+                <div class="tool-chip">UNINSTALL_APP</div>
+                <div class="tool-chip">RUN_PS</div>
+                <div class="tool-chip">LIST_PROCESSES</div>
+                <div class="tool-chip">KILL_PROCESS</div>
+                <div class="tool-chip">LIST_WINDOWS</div>
+                <div class="tool-chip">CAPTURE_WINDOW</div>
+                <div class="tool-chip">GET_FOREGROUND_WINDOW</div>
+                <div class="tool-chip">OPEN_APP_LOCATION</div>
+            </div>
+        </div>
+    </section>
+
+    <section id="architecture">
+        <div class="container">
+            <h2 class="section-title">技术架构</h2>
+            <p class="section-sub">C++17 原生 + WebView2 渲染 + OpenAI 兼容 API</p>
+            <div class="arch-block">
+                <div class="arch-row">
+                    <div class="arch-box">Win32 Window</div>
+                    <div class="arch-arrow">→</div>
+                    <div class="arch-box accent">WebView2</div>
+                    <div class="arch-arrow">→</div>
+                    <div class="arch-box">HTML5 + CSS3 + JS</div>
+                </div>
+                <div class="arch-row">
+                    <div class="arch-box accent">AI Provider</div>
+                    <div class="arch-arrow">↔</div>
+                    <div class="arch-box">OpenAI API (SSE)</div>
+                    <div class="arch-arrow">↔</div>
+                    <div class="arch-box">Tool Registry</div>
+                </div>
+                <div class="arch-row">
+                    <div class="arch-box">Permission System</div>
+                    <div class="arch-arrow">+</div>
+                    <div class="arch-box">MCP Client</div>
+                    <div class="arch-arrow">+</div>
+                    <div class="arch-box">Path Validation</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="vs" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+        <div class="container">
+            <h2 class="section-title">Desktop 版 vs 旧版</h2>
+            <p class="section-sub">为什么新一代 Desktop 版是更好的选择</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;max-width:900px;margin:0 auto;">
+                <div style="text-align:center;font-size:13px;color:var(--text-secondary);font-weight:600;">对比维度</div>
+                <div style="text-align:center;font-size:13px;padding:6px 0;background:var(--card);border:1px solid var(--border);border-radius:6px;"><span style="color:#f59e0b;">旧版 (CLI/Web)</span></div>
+                <div style="text-align:center;font-size:13px;padding:6px 0;background:var(--tag-bg);border:1px solid var(--accent);border-radius:6px;color:var(--accent);font-weight:600;">Desktop 版</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;max-width:900px;margin:12px auto 0;">
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">运行方式</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">需要打开命令行 或 浏览器访问 localhost</div><div style="font-size:13px;color:var(--text);padding:8px 0;">双击 exe，原生窗口即开即用</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">可执行文件</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">2 个 exe + 多个 DLL</div><div style="font-size:13px;color:var(--text);padding:8px 0;">1 个 exe (DLL 内嵌)</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">工具调用</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">文本解析（需匹配固定格式）</div><div style="font-size:13px;color:var(--text);padding:8px 0;">OpenAI 原生 Function Calling</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">权限控制</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">无</div><div style="font-size:13px;color:var(--text);padding:8px 0;">allow/deny/ask 规则引擎 + 通配符</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">会话保存</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">无持久化</div><div style="font-size:13px;color:var(--text);padding:8px 0;">多会话 JSON 持久化</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">离线可用</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">依赖 CDN (Google Fonts / Font Awesome)</div><div style="font-size:13px;color:var(--text);padding:8px 0;">零外部请求，完全离线</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">页面大小</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">2864 行 HTML + 3 个外部依赖</div><div style="font-size:13px;color:var(--text);padding:8px 0;">258 行 HTML + 零外部依赖</div>
+                <div style="font-size:13px;color:var(--text);padding:8px 0;">MCP 传输</div><div style="font-size:13px;color:var(--text-secondary);padding:8px 0;">HTTP + stdio 双模式</div><div style="font-size:13px;color:var(--text);padding:8px 0;">纯 stdio，集成 ToolRegistry</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="cta" id="download">
+        <h2>准备好体验了吗？</h2>
+        <p>免费开源，Windows 10/11 原生支持，WebView2 Runtime 已内置。</p>
+        <a href="https://github.com/yunsjxh/Open-Aries-AI-Desktop/releases/latest" class="btn btn-primary" style="font-size:16px;padding:14px 32px;">下载 Open Aries AI v1.0.1</a>
+    </section>
+</main>
+
+<footer>
+    <div class="container">
+        <p>Open Aries AI <strong style="color:var(--accent);">Desktop</strong> &mdash; C++17 + WebView2 原生应用 &middot; <a href="index.html">旧版项目页</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,6 @@
+# Aries AI Agent 配置文件
+# 重命名为 config.txt 并填入你的 API 信息
+
+api_host=https://api.siliconflow.cn/v1
+api_key=你的API密钥
+model=Pro/moonshotai/Kimi-K2.6
