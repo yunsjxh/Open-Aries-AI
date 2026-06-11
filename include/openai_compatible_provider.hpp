@@ -621,6 +621,8 @@ private:
         bool streamDone = false;
         size_t consumed = 0;  // cursor avoids O(n²) per-event erase
         bool reasoningActive = false;  // track reasoning blocks to prefix marker only once
+        bool thinkTagActive = false;   // track <think>...</think> blocks (DeepSeek-R1 / MiniMax-M3)
+        std::string thinkBuffer;       // buffer for accumulating <think> content across deltas
         bool textToolNotified = false;  // avoid duplicate \x02 for text-based tool calls
 
         while (!streamDone && !g_abortFlag.load() && InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
@@ -668,6 +670,46 @@ private:
                     size_t valStart = dataJson.find_first_not_of(" \t\r\n", contentPos + 10);
                     if (valStart != std::string::npos && dataJson[valStart] == '"') {
                         deltaText = extractJsonString(dataJson, contentPos + 10);
+                    }
+                }
+
+                // Handle <think>...</think> tags in content (DeepSeek-R1 / MiniMax-M3 / Kimi-K2)
+                if (!deltaText.empty()) {
+                    if (thinkTagActive) {
+                        size_t endTag = deltaText.find("</think>");
+                        if (endTag != std::string::npos) {
+                            thinkBuffer += deltaText.substr(0, endTag);
+                            if (onDelta) onDelta(std::string("\x01") + thinkBuffer, false);
+                            thinkBuffer.clear();
+                            thinkTagActive = false;
+                            reasoningActive = true;
+                            deltaText = deltaText.substr(endTag + 8);
+                            if (deltaText.empty()) continue;
+                        } else {
+                            thinkBuffer += deltaText;
+                            if (onDelta) onDelta(std::string("\x01") + deltaText, false);
+                            continue;
+                        }
+                    } else {
+                        size_t startTag = deltaText.find("<think>");
+                        if (startTag != std::string::npos) {
+                            std::string beforeThink = deltaText.substr(0, startTag);
+                            size_t afterStart = startTag + 7;
+                            size_t endTag = deltaText.find("</think>", afterStart);
+                            if (endTag != std::string::npos) {
+                                std::string thinking = deltaText.substr(afterStart, endTag - afterStart);
+                                if (onDelta) onDelta(std::string("\x01") + thinking, false);
+                                reasoningActive = true;
+                                deltaText = beforeThink + deltaText.substr(endTag + 8);
+                                if (deltaText.empty()) continue;
+                            } else {
+                                thinkTagActive = true;
+                                thinkBuffer = deltaText.substr(afterStart);
+                                if (!beforeThink.empty() && onDelta) onDelta(beforeThink, false);
+                                if (onDelta) onDelta(std::string("\x01") + thinkBuffer, false);
+                                continue;
+                            }
+                        }
                     }
                 }
 
@@ -735,45 +777,64 @@ private:
                 if (outToolCalls) {
                     size_t tcPos = dataJson.find("\"tool_calls\"");
                     if (tcPos != std::string::npos) {
-                        // Parse each tool call entry in the array
-                        size_t searchFrom = tcPos;
-                        while ((searchFrom = dataJson.find("\"index\":", searchFrom)) != std::string::npos) {
-                            int tcIndex = -1;
-                            size_t numStart = searchFrom + 8;
-                            while (numStart < dataJson.size() && (dataJson[numStart] == ' ' || dataJson[numStart] == '\t')) numStart++;
-                            while (numStart < dataJson.size() && dataJson[numStart] >= '0' && dataJson[numStart] <= '9') {
-                                tcIndex = (tcIndex < 0 ? 0 : tcIndex) * 10 + (dataJson[numStart] - '0');
-                                numStart++;
-                            }
-                            if (tcIndex < 0) { searchFrom++; continue; }
-                            if ((int)toolCallAcc.size() <= tcIndex) toolCallAcc.resize(tcIndex + 1);
-                            auto& tc = toolCallAcc[tcIndex];
+                        bool hasIndex = (dataJson.find("\"index\":", tcPos) != std::string::npos);
+                        if (hasIndex) {
+                            size_t searchFrom = tcPos;
+                            while ((searchFrom = dataJson.find("\"index\":", searchFrom)) != std::string::npos) {
+                                int tcIndex = -1;
+                                size_t numStart = searchFrom + 8;
+                                size_t searchEnd = searchFrom;
+                                while (numStart < dataJson.size() && (dataJson[numStart] == ' ' || dataJson[numStart] == '\t')) numStart++;
+                                while (numStart < dataJson.size() && dataJson[numStart] >= '0' && dataJson[numStart] <= '9') {
+                                    tcIndex = (tcIndex < 0 ? 0 : tcIndex) * 10 + (dataJson[numStart] - '0');
+                                    numStart++;
+                                }
+                                if (tcIndex < 0) { searchFrom++; continue; }
+                                if ((int)toolCallAcc.size() <= tcIndex) toolCallAcc.resize(tcIndex + 1);
+                                auto& tc = toolCallAcc[tcIndex];
 
-                            size_t idPos = dataJson.find("\"id\":\"", searchFrom);
-                            if (idPos != std::string::npos && idPos < dataJson.size() && tc.id.empty()) {
-                                tc.id = extractJsonString(dataJson, idPos + 4);
-                            }
-                            size_t fnPos = dataJson.find("\"function\":", searchFrom);
-                            if (fnPos != std::string::npos) {
-                                size_t namePos = dataJson.find("\"name\":\"", fnPos);
-                                if (namePos != std::string::npos && namePos < dataJson.size() && tc.name.empty()) {
-                                    tc.name = extractJsonString(dataJson, namePos + 7);
-                                    // Real-time notification: tool call streaming started
-                                    if (onDelta && !tc.name.empty()) {
-                                        onDelta(std::string("\x02") + tc.name, false);
+                                size_t idPos = dataJson.find("\"id\":\"", searchFrom);
+                                if (idPos == std::string::npos) idPos = dataJson.rfind("\"id\":\"", searchEnd);
+                                if (idPos != std::string::npos && idPos < dataJson.size() && tc.id.empty()) {
+                                    tc.id = extractJsonString(dataJson, idPos + 4);
+                                }
+                                // function may be before index (MiniMax: {"function":{...},"index":0})
+                                size_t fnPos = dataJson.find("\"function\":", searchFrom);
+                                if (fnPos == std::string::npos) fnPos = dataJson.rfind("\"function\":", searchEnd);
+                                if (fnPos != std::string::npos) {
+                                    size_t namePos = dataJson.find("\"name\":\"", fnPos);
+                                    if (namePos != std::string::npos && namePos < dataJson.size() && tc.name.empty()) {
+                                        tc.name = extractJsonString(dataJson, namePos + 7);
+                                        if (onDelta && !tc.name.empty()) {
+                                            onDelta(std::string("\x02") + tc.name, false);
+                                        }
+                                    }
+                                    size_t argsPos = dataJson.find("\"arguments\":\"", fnPos);
+                                    if (argsPos != std::string::npos) {
+                                        std::string argFrag = extractJsonString(dataJson, argsPos + 12);
+                                        tc.arguments += argFrag;
+                                        if (onDelta && !argFrag.empty()) {
+                                            onDelta(std::string("\x03") + argFrag, false);
+                                        }
                                     }
                                 }
-                                size_t argsPos = dataJson.find("\"arguments\":\"", fnPos);
-                                if (argsPos != std::string::npos) {
-                                    std::string argFrag = extractJsonString(dataJson, argsPos + 12);
-                                    tc.arguments += argFrag;
-                                    // Stream argument deltas to UI in real-time
-                                    if (onDelta && !argFrag.empty()) {
-                                        onDelta(std::string("\x03") + argFrag, false);
+                                searchFrom = numStart;
+                            }
+                        } else {
+                            // No index: arguments continuation chunk (MiniMax split)
+                            if (!toolCallAcc.empty()) {
+                                size_t fnPos = dataJson.find("\"function\":", tcPos);
+                                if (fnPos != std::string::npos) {
+                                    size_t argsPos = dataJson.find("\"arguments\":\"", fnPos);
+                                    if (argsPos != std::string::npos) {
+                                        std::string argFrag = extractJsonString(dataJson, argsPos + 12);
+                                        toolCallAcc.back().arguments += argFrag;
+                                        if (onDelta && !argFrag.empty()) {
+                                            onDelta(std::string("\x03") + argFrag, false);
+                                        }
                                     }
                                 }
                             }
-                            searchFrom = numStart;  // advance past this index
                         }
                     }
                 }
@@ -924,6 +985,17 @@ private:
             }
         }
         
+        // Handle <think>...</think> tags in content (DeepSeek-R1 / MiniMax-M3 / Kimi-K2)
+        size_t thinkStart = content.find("<think>");
+        if (thinkStart != std::string::npos) {
+            size_t thinkContentStart = thinkStart + 7;
+            size_t thinkEnd = content.find("</think>", thinkContentStart);
+            if (thinkEnd != std::string::npos) {
+                reasoningContent = content.substr(thinkContentStart, thinkEnd - thinkContentStart);
+                content = content.substr(0, thinkStart) + content.substr(thinkEnd + 8);
+            }
+        }
+
         // 如果有 reasoning_content，合并到结果中
         if (!reasoningContent.empty()) {
             return "<思考过程>\n" + reasoningContent + "\n</思考过程>\n\n" + content;

@@ -150,6 +150,31 @@ public:
         return best ? best->action : PermissionRule::Ask;
     }
 
+    // Session-scoped evaluation: ignores rulesets whose name starts with
+    // "session:" but doesn't match the given sessionId. Used so that a rule
+    // approved in session A is not visible when evaluating requests from B.
+    // (The "legacy" / "agent-defaults" / "chat-defaults" rulesets are always
+    // visible because they don't start with "session:".)
+    PermissionRule::Action evaluateForSession(
+            const std::string& permission,
+            const std::string& pattern,
+            const std::string& sessionId) const {
+        std::lock_guard<std::mutex> lk(mutex_);
+
+        const std::string target = "session:" + sessionId;
+        const PermissionRule* best = nullptr;
+        for (auto& rs : rulesets_) {
+            if (rs.name.rfind("session:", 0) == 0 && rs.name != target) continue;
+            for (auto& rule : rs.rules) {
+                if (wildcardMatch(rule.permission, permission) &&
+                    wildcardMatch(rule.pattern, pattern)) {
+                    best = &rule;
+                }
+            }
+        }
+        return best ? best->action : PermissionRule::Ask;
+    }
+
     // --- Ask callback factory ---
     // Returns a function suitable for ToolContext::ask.
     // Evaluates rules first: Allow→true, Deny→false, Ask→calls the prompt callback.
@@ -215,6 +240,22 @@ public:
         std::lock_guard<std::mutex> lk(mutex_);
         auto* rs = getExisting(name);
         return rs ? rs->rules : std::vector<PermissionRule>{};
+    }
+
+    // Get a const pointer to a ruleset by name. Returns nullptr if absent.
+    // Lifetime is bound to the PermissionSystem; caller must not outlive it.
+    const PermissionRuleset* getRulesetPtr(const std::string& name) const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return getExisting(name);
+    }
+
+    // Remove a whole ruleset (e.g., when its session is deleted).
+    void removeRuleset(const std::string& name) {
+        std::lock_guard<std::mutex> lk(mutex_);
+        rulesets_.erase(
+            std::remove_if(rulesets_.begin(), rulesets_.end(),
+                [&](const PermissionRuleset& rs) { return rs.name == name; }),
+            rulesets_.end());
     }
 
     const std::vector<PermissionRuleset>& rulesets() const { return rulesets_; }
